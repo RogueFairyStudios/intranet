@@ -42,6 +42,35 @@
 <script>
 import gql from 'graphql-tag'
 
+const queries = {
+  pages: gql`
+    query ($projectId: String!, $search: String!) {
+      studioPages(projectId: $projectId, search: $search) {
+        id
+        title
+        path
+        locale
+      }
+    }
+  `,
+  groups: gql`
+    query ($projectId: String!, $search: String!) {
+      studioGroups(projectId: $projectId, search: $search) {
+        id
+        name
+      }
+    }
+  `,
+  users: gql`
+    query ($projectId: String!, $search: String!) {
+      studioUsers(projectId: $projectId, search: $search) {
+        id
+        name
+      }
+    }
+  `
+}
+
 export default {
   props: {
     value: { type: [String, Number], default: null },
@@ -81,10 +110,10 @@ export default {
       this.loading = true
       this.error = ''
       const name = this.kind === 'pages' ? 'studioPages' : this.kind === 'groups' ? 'studioGroups' : 'studioUsers'
-      const fields = this.kind === 'pages' ? 'id title path locale' : 'id name'
+      const query = queries[this.kind] || queries.users
       try {
         const { data } = await this.$apollo.query({
-          query: gql(`query ($projectId: String!, $search: String!) { ${name}(projectId: $projectId, search: $search) { ${fields} } }`),
+          query,
           variables: { projectId: this.projectId, search: this.search },
           fetchPolicy: 'network-only'
         })

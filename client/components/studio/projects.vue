@@ -633,7 +633,48 @@ import RecordForm from './record-form.vue'
 import DeliveryPanel from './delivery-panel.vue'
 import CreditsPanel from './credits-panel.vue'
 
-const fields = 'id revision state canManage canEdit'
+const studioProjectsQuery = gql`
+  query {
+    studioProjects {
+      id
+      revision
+      state
+      canManage
+      canEdit
+    }
+  }
+`
+const studioTemplatesQuery = gql`
+  query ($locale: String!) {
+    studioTemplates(locale: $locale) {
+      key
+      title
+      version
+    }
+  }
+`
+const studioCreateProjectMutation = gql`
+  mutation ($name: String!, $kind: String!) {
+    studioCreateProject(name: $name, kind: $kind) {
+      id
+      revision
+      state
+      canManage
+      canEdit
+    }
+  }
+`
+const studioCommandMutation = gql`
+  mutation ($projectId: String!, $revision: Int!, $command: String!, $input: String!) {
+    studioCommand(projectId: $projectId, revision: $revision, command: $command, input: $input) {
+      id
+      revision
+      state
+      canManage
+      canEdit
+    }
+  }
+`
 export default {
   components: { SearchPicker, RecordForm, DeliveryPanel, CreditsPanel },
   data () {
@@ -780,7 +821,7 @@ export default {
         this.error = error.message
         if (/revision|conflict|changed|stale/i.test(error.message)) {
           try {
-            const { data } = await this.$apollo.query({ query: gql(`query { studioProjects { ${fields} } }`), fetchPolicy: 'network-only' })
+            const { data } = await this.$apollo.query({ query: studioProjectsQuery, fetchPolicy: 'network-only' })
             this.projects = data.studioProjects.map(this.decode)
             this.error = this.t('conflict')
           } catch (refreshError) {
@@ -811,7 +852,7 @@ export default {
     },
     async load () {
       await this.run(async () => {
-        const { data } = await this.$apollo.query({ query: gql(`query { studioProjects { ${fields} } }`), fetchPolicy: 'network-only' })
+        const { data } = await this.$apollo.query({ query: studioProjectsQuery, fetchPolicy: 'network-only' })
         this.projects = data.studioProjects.map(this.decode)
         if (!this.project && this.projects.length) {
           const requested = this.initialProjectId && this.projects.find(item => item.id === this.initialProjectId)
@@ -819,7 +860,7 @@ export default {
           this.initialProjectId = ''
         }
         const result = await this.$apollo.query({
-          query: gql('query($locale:String!){studioTemplates(locale:$locale){key title version}}'),
+          query: studioTemplatesQuery,
           variables: { locale: this.newDocument.locale }
         })
         this.templates = result.data.studioTemplates
@@ -840,7 +881,7 @@ export default {
     async createProject () {
       await this.run(async () => {
         const { data } = await this.$apollo.mutate({
-          mutation: gql(`mutation ($name: String!, $kind: String!) { studioCreateProject(name: $name, kind: $kind) { ${fields} } }`),
+          mutation: studioCreateProjectMutation,
           variables: this.newProject
         })
         this.projects.push(this.decode(data.studioCreateProject))
@@ -851,7 +892,7 @@ export default {
     async command (command, input) {
       return this.run(async () => {
         const { data } = await this.$apollo.mutate({
-          mutation: gql(`mutation ($projectId: String!, $revision: Int!, $command: String!, $input: String!) { studioCommand(projectId: $projectId, revision: $revision, command: $command, input: $input) { ${fields} } }`),
+          mutation: studioCommandMutation,
           variables: { projectId: this.selected, revision: this.project.revision, command, input: JSON.stringify(input) }
         })
         this.$set(this.projects, this.projects.findIndex(row => row.id === data.studioCommand.id), this.decode(data.studioCommand))

@@ -272,7 +272,11 @@ export default {
     async download (snapshot, format) {
       await this.run(async () => {
         const { data } = await this.$apollo.query({
-          query: gql('query ($projectId: String!, $snapshotId: String!, $format: String!) { studioCredits(projectId: $projectId, snapshotId: $snapshotId, format: $format) }'),
+          query: gql`
+            query ($projectId: String!, $snapshotId: String!, $format: String!) {
+              studioCredits(projectId: $projectId, snapshotId: $snapshotId, format: $format)
+            }
+          `,
           variables: { projectId: this.project.id, snapshotId: snapshot.id, format },
           fetchPolicy: 'network-only'
         })
