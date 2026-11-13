@@ -16,8 +16,6 @@ const ScriptExtHtmlWebpackPlugin = require('script-ext-html-webpack-plugin')
 const VuetifyLoaderPlugin = require('vuetify-loader/lib/plugin')
 const WebpackBarPlugin = require('webpackbar')
 
-const now = Math.round(Date.now() / 1000)
-
 const babelConfig = fs.readJsonSync(path.join(process.cwd(), '.babelrc'))
 const cacheDir = '.webpack-cache/cache'
 const babelDir = path.join(process.cwd(), '.webpack-cache/babel')
@@ -36,8 +34,8 @@ module.exports = {
   output: {
     path: path.join(process.cwd(), 'assets'),
     publicPath: '/_assets/',
-    filename: `js/[name].js?${now}`,
-    chunkFilename: `js/[name].js?${now}`,
+    filename: 'js/[name].[contenthash:8].js',
+    chunkFilename: 'js/[name].[contenthash:8].js',
     globalObject: 'this',
     crossOriginLoading: 'use-credentials'
   },
@@ -230,7 +228,7 @@ module.exports = {
     }),
     new HtmlWebpackPugPlugin(),
     new ScriptExtHtmlWebpackPlugin({
-      sync: 'runtime.js',
+      sync: 'js/runtime.',
       defaultAttribute: 'async'
     }),
     new WebpackBarPlugin({

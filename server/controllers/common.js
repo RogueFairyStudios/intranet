@@ -31,6 +31,7 @@ router.get('/p/studio', (req, res) => {
   _.set(res, 'locals.siteConfig.lang', locale)
   _.set(res, 'locals.siteConfig.rtl', req.i18n.dir() === 'rtl')
   _.set(res.locals, 'pageMeta.title', locale.startsWith('pt') ? 'Projetos' : 'Projects')
+  res.set('Cache-Control', 'private, no-cache')
   res.render('studio', {
     injectCode: {
       css: WIKI.config.theming.injectCSS,
