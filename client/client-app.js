@@ -165,6 +165,7 @@ Vue.component('NotFound', () => import(/* webpackChunkName: "not-found" */ './co
 Vue.component('PageSelector', () => import(/* webpackPrefetch: true, webpackChunkName: "ui-extra" */ './components/common/page-selector.vue'))
 Vue.component('PageSource', () => import(/* webpackChunkName: "source" */ './components/source.vue'))
 Vue.component('Profile', () => import(/* webpackChunkName: "profile" */ './components/profile.vue'))
+Vue.component('StudioProjects', () => import(/* webpackChunkName: "studio" */ './components/studio/projects.vue'))
 Vue.component('Register', () => import(/* webpackChunkName: "register" */ './components/register.vue'))
 Vue.component('SearchResults', () => import(/* webpackPrefetch: true, webpackChunkName: "ui-extra" */ './components/common/search-results.vue'))
 Vue.component('SocialSharing', () => import(/* webpackPrefetch: true, webpackChunkName: "ui-extra" */ './components/common/social-sharing.vue'))

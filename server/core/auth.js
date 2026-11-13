@@ -185,6 +185,7 @@ module.exports = {
             id: 1,
             email: 'api@localhost',
             name: 'API',
+            apiId: user.api,
             pictureUrl: null,
             timezone: 'America/New_York',
             localeCode: 'en',

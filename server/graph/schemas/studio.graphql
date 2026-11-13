@@ -1,0 +1,40 @@
+extend type Query {
+  studioTemplates(locale: String!): [StudioTemplate!]!
+  studioGroups(projectId: String!, search: String!): [StudioUser!]!
+  studioUsers(projectId: String!, search: String!): [StudioUser!]!
+  studioPages(projectId: String!, search: String!): [StudioPage!]!
+  studioProjects: [StudioProject!]!
+  studioProject(id: String!): StudioProject!
+  studioCredits(projectId: String!, snapshotId: String!, format: String!): String!
+}
+
+type StudioTemplate {
+  key: String!
+  title: String!
+  version: Int!
+}
+
+type StudioUser {
+  id: Int!
+  name: String!
+}
+
+type StudioPage {
+  id: Int!
+  title: String!
+  path: String!
+  locale: String!
+}
+
+extend type Mutation {
+  studioCreateProject(name: String!, kind: String!): StudioProject!
+  studioCommand(projectId: String!, revision: Int!, command: String!, input: String!): StudioProject!
+}
+
+type StudioProject {
+  id: String!
+  revision: Int!
+  state: String!
+  canManage: Boolean!
+  canEdit: Boolean!
+}

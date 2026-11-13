@@ -1,0 +1,13 @@
+extends master.pug
+
+block head
+  if injectCode && injectCode.css
+    style(type='text/css')!= injectCode.css
+  if injectCode && injectCode.head
+    != injectCode.head
+
+block body
+  #root
+    studio-projects
+  if injectCode && injectCode.body
+    != injectCode.body

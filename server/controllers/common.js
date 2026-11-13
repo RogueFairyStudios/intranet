@@ -11,6 +11,35 @@ const fs = require('fs-extra')
 
 const tmplCreateRegex = /^[0-9]+(,[0-9]+)?$/
 
+router.get('/p/studio', (req, res) => {
+  if (!req.user || req.user.id === 2) {
+    if (req.accepts(['html', 'json']) === 'html') {
+      res.cookie('loginRedirect', req.originalUrl, {
+        maxAge: 15 * 60 * 1000
+      })
+      return res.redirect('/login')
+    }
+    _.set(res.locals, 'pageMeta.title', 'Unauthorized')
+    return res.status(403).render('unauthorized', { action: 'view' })
+  }
+  const requestedLang = typeof req.query.lang === 'string' ? req.query.lang.trim().toLowerCase() : ''
+  const availableLocales = _.map(res.locals.langs || [], 'code')
+  const locale = (requestedLang && (availableLocales.includes(requestedLang) || requestedLang === WIKI.config.lang.code)) ?
+    requestedLang :
+    (WIKI.config.lang.code || req.user.localeCode || 'en')
+  req.i18n.changeLanguage(locale)
+  _.set(res, 'locals.siteConfig.lang', locale)
+  _.set(res, 'locals.siteConfig.rtl', req.i18n.dir() === 'rtl')
+  _.set(res.locals, 'pageMeta.title', locale.startsWith('pt') ? 'Projetos' : 'Projects')
+  res.render('studio', {
+    injectCode: {
+      css: WIKI.config.theming.injectCSS,
+      head: WIKI.config.theming.injectHead,
+      body: WIKI.config.theming.injectBody
+    }
+  })
+})
+
 /**
  * Robots.txt
  */

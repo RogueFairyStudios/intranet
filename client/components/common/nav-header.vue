@@ -93,8 +93,9 @@
             v-icon(color='grey') mdi-magnify
 
           //- LANGUAGES
+          v-btn(v-if='isAuthenticated', href='/p/studio', text) {{activeLocale.startsWith('pt') ? 'Projetos' : 'Projects'}}
 
-          template(v-if='mode === `view` && locales.length > 0')
+          template(v-if='(mode === `view` || mode === `studio`) && locales.length > 0')
             v-menu(offset-y, bottom, transition='slide-y-transition', max-height='320px', min-width='210px', left)
               template(v-slot:activator='{ on: menu, attrs }')
                 v-tooltip(bottom)
@@ -113,7 +114,7 @@
               v-list(nav)
                 template(v-for='(lc, idx) of locales')
                   v-list-item(@click='changeLocale(lc)')
-                    v-list-item-action(style='min-width:auto;'): v-chip(:color='lc.code === locale ? `blue` : `grey`', small, label, dark) {{lc.code.toUpperCase()}}
+                    v-list-item-action(style='min-width:auto;'): v-chip(:color='lc.code === activeLocale ? `blue` : `grey`', small, label, dark) {{lc.code.toUpperCase()}}
                     v-list-item-title {{lc.name}}
             v-divider(vertical)
 
@@ -307,6 +308,11 @@ export default {
     pictureUrl: get('user/pictureUrl'),
     isAuthenticated: get('user/authenticated'),
     permissions: get('user/permissions'),
+    activeLocale () {
+      return (['view', 'edit', 'history', 'source', 'studio'].includes(this.mode) && this.locale) ?
+        this.locale :
+        (siteConfig.lang || this.locale || 'en')
+    },
     picture () {
       if (this.pictureUrl && this.pictureUrl.length > 1) {
         return {
@@ -470,6 +476,12 @@ export default {
         case 'history':
           window.location.assign(`/${locale.code}/${this.path}`)
           break
+        case 'studio': {
+          const params = new URLSearchParams(window.location.search)
+          params.set('lang', locale.code)
+          window.location.assign(`/p/studio?${params.toString()}`)
+          break
+        }
       }
     },
     logout () {
@@ -477,7 +489,7 @@ export default {
     },
     goHome () {
       if (this.locales && this.locales.length > 0) {
-        window.location.assign(`/${this.locale}/home`)
+        window.location.assign(`/${this.activeLocale}/home`)
       } else {
         window.location.assign('/')
       }

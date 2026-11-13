@@ -47,3 +47,6 @@ test-results/
 
 # Localization Resources
 /server/locales/**/*.yml
+
+# Python integration runtime files
+__pycache__/

@@ -11,6 +11,7 @@
     "build": "cross-env NODE_OPTIONS=--openssl-legacy-provider webpack --profile --config dev/webpack/webpack.prod.js",
     "watch": "cross-env NODE_OPTIONS=--openssl-legacy-provider webpack --config dev/webpack/webpack.dev.js",
     "test": "eslint --format codeframe --ext .js,.vue . && pug-lint server/views && jest",
+    "test:studio": "eslint --ext .js,.vue server/helpers/studio*.js server/graph/resolvers/studio.js server/controllers/studio.js server/models/studioProjects.js server/test/studio*.js client/components/studio && jest server/test/studio --runInBand",
     "cypress:open": "cypress open",
     "postinstall": "patch-package"
   },
