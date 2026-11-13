@@ -68,6 +68,102 @@ class BridgeTests(unittest.TestCase):
             result = self.client.flush()
         self.assertEqual(result, {'sent': 1, 'pending': 1})
 
+    def test_inspect_git_repository_status_and_strip_credentials(self):
+        repo = Path(self.temp.name) / 'git-repo'
+        repo.mkdir()
+        import subprocess
+        subprocess.run(['git', 'init', '-b', 'main'], cwd=str(repo), check=True, capture_output=True)
+        subprocess.run(['git', 'config', 'user.name', 'Fairy Dev'], cwd=str(repo), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'dev@roguefairy.net'], cwd=str(repo), check=True)
+        subprocess.run(['git', 'remote', 'add', 'origin', 'https://token:secret@github.com/RogueFairyStudios/GhostLore.git'], cwd=str(repo), check=True)
+        tracked = repo / 'dialogue.yaml'
+        tracked.write_text('id: intro\n', encoding='utf-8')
+        subprocess.run(['git', 'add', 'dialogue.yaml'], cwd=str(repo), check=True)
+        subprocess.run(['git', 'commit', '-m', 'Initial dialogue'], cwd=str(repo), check=True, capture_output=True)
+
+        clean_info = bridge.inspect_vcs(repo, slug='ghostlore')
+        self.assertEqual(clean_info['system'], 'git')
+        self.assertEqual(clean_info['branch'], 'main')
+        self.assertTrue(clean_info['clean'])
+        self.assertEqual(clean_info['remoteUri'], 'https://github.com/RogueFairyStudios/GhostLore.git')
+        self.assertEqual(clean_info['commitMessage'], 'Initial dialogue')
+
+        tracked.write_text('id: intro_v2\n', encoding='utf-8')
+        (repo / 'scratch.tmp').write_text('tmp', encoding='utf-8')
+        dirty_info = bridge.inspect_vcs(repo, slug='ghostlore')
+        self.assertFalse(dirty_info['clean'])
+        self.assertEqual(dirty_info['modifiedCount'], 1)
+        self.assertEqual(dirty_info['untrackedCount'], 1)
+        self.assertIn('dialogue.yaml', dirty_info['modifiedFiles'])
+
+    def test_inspect_lore_ndjson_revisions_and_locks(self):
+        repo = Path(self.temp.name) / 'lore-repo'
+        (repo / '.lore').mkdir(parents=True)
+        (repo / '.lore' / 'config.toml').write_text('remote_url = "lores://user:pw@lore.roguefairy.net:41337/ghostlore"\n', encoding='utf-8')
+        (repo / '.lore' / 'view').write_text('main@19\n', encoding='utf-8')
+
+        def fake_run(argv, cwd=None, timeout=15):
+            joined = ' '.join(argv)
+            if 'revision info' in joined:
+                return 0, json.dumps({
+                    'tagName': 'revisionInfo',
+                    'data': {
+                        'branch': 'main',
+                        'signature': 'e' * 64,
+                        'revisionNumber': 21,
+                        'message': 'Update spirit rig',
+                        'author': 'rigger@roguefairy.net',
+                    },
+                }) + '\n', ''
+            if 'status' in joined:
+                return 0, json.dumps({
+                    'tagName': 'fileStatus',
+                    'data': {'path': 'Content\\Rigs\\Spirit.uasset', 'status': 'modified'},
+                }) + '\n', ''
+            if 'lock query' in joined:
+                return 0, json.dumps({
+                    'tagName': 'lock',
+                    'data': {
+                        'resource': {'description': 'Content/Rigs/Spirit.uasset', 'branch': 'main'},
+                        'owner': 'rigger@roguefairy.net',
+                        'locked_at': '2026-11-13T10:00:00Z',
+                    },
+                }) + '\n', ''
+            return 1, '', ''
+
+        with patch.object(bridge, '_run_cmd', side_effect=fake_run):
+            info = bridge.inspect_vcs(repo, slug='ghostlore-lore')
+        self.assertEqual(info['system'], 'lore')
+        self.assertEqual(info['remoteUri'], 'lores://lore.roguefairy.net:41337/ghostlore')
+        self.assertEqual(info['revisionNumber'], 21)
+        self.assertFalse(info['clean'])
+        self.assertEqual(info['modifiedFiles'], ['Content/Rigs/Spirit.uasset'])
+        self.assertEqual(len(info['locks']), 1)
+        self.assertEqual(info['locks'][0]['owner'], 'rigger@roguefairy.net')
+        event = {'source': 'lore', 'type': 'vcsStatus', 'payload': info}
+        queued = self.client.queue(event)
+        self.assertTrue(queued.exists())
+
+    def test_inspect_uefn_urc_workspace_and_stage_cli(self):
+        repo = Path(self.temp.name) / 'TicketToDeath'
+        (repo / '.urc').mkdir(parents=True)
+        (repo / 'TicketToDeath.uefnproject').write_text(
+            json.dumps({'title': 'Ticket To Death', 'bindings': {'projectId': '8feets-uuid-1234'}}),
+            encoding='utf-8',
+        )
+        info = bridge.inspect_vcs(repo)
+        self.assertEqual(info['system'], 'urc')
+        self.assertEqual(info['compression'], 'oodle')
+        self.assertIn('uefn://open?project=8feets-uuid-1234', info['remoteUri'])
+
+        stage_event = {
+            'source': 'goethe',
+            'type': 'artifactStage',
+            'payload': {'externalId': 'dlg-intro', 'stage': 'engine_integration'},
+        }
+        queued = self.client.queue(stage_event)
+        self.assertTrue(queued.exists())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,6 +1,9 @@
 const crypto = require('crypto')
 
-module.exports = ({ text, find, id, build }) => {
+const vcsSystems = ['git', 'lore', 'urc']
+const repoProtocols = ['https:', 'http:', 'ssh:', 'git:', 'lore:', 'lores:', 'urc:', 'urcs:', 'uefn:', 'com.epicgames.launcher:']
+
+module.exports = ({ text, find, id, build, safeUri, phases, stages, tracks, tools }) => {
   function reference (rows, value) { return value ? find(rows, value).id : null }
   function references (rows, values = []) {
     if (!Array.isArray(values)) throw new Error('Expected references')
@@ -16,10 +19,54 @@ module.exports = ({ text, find, id, build }) => {
     else rows.push({ id: id(), ...values })
   }
   function uri (value) {
-    const parsed = new URL(text(value, 4000))
-    if (!['https:', 'http:', 'file:'].includes(parsed.protocol)) throw new Error('Unsupported artifact location')
-    if (parsed.username || parsed.password) throw new Error('Artifact location must not contain credentials')
+    return safeUri(value)
+  }
+  function phase (value, fallback = '') {
+    if (!value) return fallback
+    if (!phases.includes(value)) throw new Error('Invalid production phase')
+    return value
+  }
+  function stage (value, fallback = '') {
+    if (!value) return fallback
+    if (!stages.includes(value)) throw new Error('Invalid pipeline stage')
+    return value
+  }
+  function track (value, fallback = 'general') {
+    if (!value) return fallback
+    if (!tracks.includes(value)) throw new Error('Invalid pipeline track')
+    return value
+  }
+  function tool (value, fallback = 'generic') {
+    if (!value) return fallback
+    if (!tools.includes(value)) throw new Error('Invalid studio tool')
+    return value
+  }
+  function slug (value) {
+    const clean = text(value, 120).toLowerCase()
+    if (!/^[a-z0-9][a-z0-9._-]*$/.test(clean)) throw new Error('Invalid repository slug')
+    return clean
+  }
+  function repoPath (value) {
+    if (!value) return ''
+    const clean = text(value, 1000).replace(/\\/g, '/').replace(/^\/+/, '')
+    if (clean.split('/').includes('..')) throw new Error('Invalid asset path')
+    return clean
+  }
+  function remoteUri (value) {
+    if (!value) return ''
+    const raw = text(value, 2000)
+    if (/^git@[A-Za-z0-9._-]+:[A-Za-z0-9._/-]+(?:\.git)?$/.test(raw)) return raw
+    const parsed = new URL(raw)
+    if (!repoProtocols.includes(parsed.protocol)) throw new Error('Unsupported repository remote URI')
+    if (parsed.password || (parsed.username && !(parsed.protocol === 'ssh:' && parsed.username === 'git'))) {
+      throw new Error('Repository URI must not contain credentials')
+    }
     return parsed.href
+  }
+  function count (value) {
+    if (value === undefined || value === null || value === '') return 0
+    if (!Number.isInteger(value) || value < 0 || value > 1000000) throw new Error('Invalid count')
+    return value
   }
   function approved (state, versionId) {
     const reviews = state.artifactReviews.filter(row => row.versionId === versionId)
@@ -32,12 +79,19 @@ module.exports = ({ text, find, id, build }) => {
       state.name = text(input.name)
       state.kind = input.kind
       state.archived = input.archived === true
+      if (input.phase) state.phase = phase(input.phase)
     },
     team (state, input) {
       save(state.teams, input, { name: text(input.name, 120), archived: input.archived === true })
     },
     milestone (state, input) {
-      save(state.milestones, input, { name: text(input.name), criteria: input.criteria ? text(input.criteria, 10000) : '', dueDate: date(input.dueDate) })
+      const existing = input.id ? find(state.milestones, input.id) : null
+      save(state.milestones, input, {
+        name: text(input.name),
+        phase: phase(input.phase, (existing && existing.phase) || state.phase || 'pre_production'),
+        criteria: input.criteria ? text(input.criteria, 10000) : '',
+        dueDate: date(input.dueDate)
+      })
     },
     cycle (state, input) {
       const startDate = date(input.startDate)
@@ -47,25 +101,144 @@ module.exports = ({ text, find, id, build }) => {
       if (!Number.isFinite(capacity) || capacity < 0) throw new Error('Invalid capacity')
       save(state.cycles, input, { name: text(input.name), goal: input.goal ? text(input.goal, 10000) : '', startDate, endDate, capacity })
     },
+    repository (state, input) {
+      const existing = input.id ? find(state.repositories, input.id) : null
+      if (!vcsSystems.includes(input.system)) throw new Error('Invalid VCS system')
+      const repoSlug = slug(input.slug || input.name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, ''))
+      const duplicate = state.repositories.find(row => row.slug === repoSlug && (!existing || row.id !== existing.id))
+      if (duplicate) throw new Error('Repository slug already exists')
+      const values = {
+        name: text(input.name, 200),
+        slug: repoSlug,
+        system: input.system,
+        remoteUri: remoteUri(input.remoteUri),
+        defaultBranch: input.defaultBranch ? text(input.defaultBranch, 200) : 'main',
+        workspacePath: repoPath(input.workspacePath),
+        status: existing ? existing.status || null : null
+      }
+      save(state.repositories, input, values)
+    },
+    vcsStatus (state, input, actor) {
+      let repo = null
+      if (input.repositoryId) {
+        repo = find(state.repositories, input.repositoryId)
+      } else if (input.slug) {
+        const repoSlug = slug(input.slug)
+        repo = state.repositories.find(row => row.slug === repoSlug)
+        if (!repo) {
+          const sys = vcsSystems.includes(input.system) ? input.system : 'git'
+          repo = {
+            id: id(),
+            name: input.name ? text(input.name, 200) : repoSlug,
+            slug: repoSlug,
+            system: sys,
+            remoteUri: remoteUri(input.remoteUri),
+            defaultBranch: input.defaultBranch ? text(input.defaultBranch, 200) : (input.branch ? text(input.branch, 200) : 'main'),
+            workspacePath: repoPath(input.workspacePath),
+            status: null
+          }
+          state.repositories.push(repo)
+        }
+      } else {
+        throw new Error('Specify repositoryId or slug')
+      }
+      if (input.remoteUri) repo.remoteUri = remoteUri(input.remoteUri)
+      const modifiedFiles = Array.isArray(input.modifiedFiles) ?
+        input.modifiedFiles.slice(0, 100).map(repoPath).filter(Boolean) :
+        []
+      const locks = Array.isArray(input.locks) ?
+        input.locks.slice(0, 200).map(lock => ({
+          path: repoPath(lock.path),
+          owner: text(lock.owner, 200),
+          branch: lock.branch ? text(lock.branch, 200) : '',
+          lockedAt: date(lock.lockedAt)
+        })).filter(lock => lock.path) :
+        []
+      repo.status = {
+        branch: input.branch ? text(input.branch, 200) : repo.defaultBranch || 'main',
+        revision: input.revision ? text(input.revision, 200) : '',
+        revisionNumber: Number.isSafeInteger(input.revisionNumber) && input.revisionNumber >= 0 ? input.revisionNumber : null,
+        commitMessage: input.commitMessage ? text(input.commitMessage, 1000) : '',
+        author: input.author ? text(input.author, 200) : '',
+        clean: input.clean !== false && modifiedFiles.length === 0 && count(input.modifiedCount) === 0 && count(input.stagedCount) === 0,
+        modifiedCount: count(input.modifiedCount !== undefined ? input.modifiedCount : modifiedFiles.length),
+        stagedCount: count(input.stagedCount),
+        untrackedCount: count(input.untrackedCount),
+        ahead: count(input.ahead),
+        behind: count(input.behind),
+        modifiedFiles,
+        locks,
+        compression: input.compression ? text(input.compression, 40) : '',
+        updatedAt: new Date().toISOString(),
+        reportedBy: String(actor)
+      }
+    },
     artifact (state, input) {
-      save(state.artifacts, input, { name: text(input.name), kind: text(input.kind, 120), taskId: reference(state.tasks, input.taskId), documentIds: references(state.documents, input.documentIds) })
+      const existing = input.id ? find(state.artifacts, input.id) : null
+      const defaultTool = (existing && existing.tool) || (input.source && tools.includes(input.source) ? input.source : 'generic')
+      const resolvedToolUri = input.toolUri ?
+        uri(input.toolUri) :
+        (input.toolUri === '' ? null : (existing ? existing.toolUri || null : null))
+      save(state.artifacts, input, {
+        name: text(input.name),
+        kind: text(input.kind, 120),
+        track: track(input.track, (existing && existing.track) || 'general'),
+        stage: stage(input.stage, (existing && existing.stage) || 'concept'),
+        tool: tool(input.tool, defaultTool),
+        toolUri: resolvedToolUri,
+        repoId: input.repoId !== undefined ? reference(state.repositories, input.repoId) : (existing ? existing.repoId || null : null),
+        assetPath: input.assetPath !== undefined ? repoPath(input.assetPath) : (existing ? existing.assetPath || '' : ''),
+        taskId: input.taskId !== undefined ? reference(state.tasks, input.taskId) : (existing ? existing.taskId || null : null),
+        documentIds: input.documentIds !== undefined ? references(state.documents, input.documentIds) : (existing ? existing.documentIds || [] : [])
+      })
+    },
+    artifactStage (state, input) {
+      let artifact = null
+      if (input.id) {
+        artifact = find(state.artifacts, input.id)
+      } else if (input.externalId && input.source) {
+        artifact = state.artifacts.find(row => row.externalId === input.externalId && row.source === input.source)
+        if (!artifact) throw new Error('External artifact not registered')
+      } else {
+        throw new Error('Artifact not found')
+      }
+      artifact.stage = stage(input.stage)
+      if (!artifact.stage) throw new Error('Invalid pipeline stage')
+      if (input.toolUri) artifact.toolUri = uri(input.toolUri)
+      if (input.vcsRevision) artifact.lastVcsRevision = text(input.vcsRevision, 200)
+      artifact.stageNote = input.note ? text(input.note, 2000) : ''
+      artifact.stageUpdatedAt = new Date().toISOString()
     },
     artifactVersion (state, input) {
       let artifactId = input.artifactId
       if (!artifactId && input.externalId) {
-        const artifact = state.artifacts.find(row => row.externalId === input.externalId && row.source === input.source)
-        if (!artifact) throw new Error('External artifact not registered')
-        artifactId = artifact.id
+        const matched = state.artifacts.find(row => row.externalId === input.externalId && row.source === input.source)
+        if (!matched) throw new Error('External artifact not registered')
+        artifactId = matched.id
       }
-      find(state.artifacts, artifactId)
+      const parent = find(state.artifacts, artifactId)
       const version = text(input.version, 120)
       if (!/^[a-f0-9]{64}$/i.test(input.checksum)) throw new Error('Expected SHA-256 checksum')
-      const data = { artifactId, version, uri: uri(input.uri), checksum: input.checksum.toLowerCase(), previewUri: input.previewUri ? uri(input.previewUri) : null }
+      const resolvedStage = input.stage ? stage(input.stage) : (parent.stage || 'concept')
+      const data = {
+        artifactId,
+        version,
+        uri: uri(input.uri),
+        checksum: input.checksum.toLowerCase(),
+        previewUri: input.previewUri ? uri(input.previewUri) : null,
+        toolUri: input.toolUri ? uri(input.toolUri) : null,
+        stage: resolvedStage,
+        vcsRevision: input.vcsRevision ? text(input.vcsRevision, 200) : null,
+        vcsBranch: input.vcsBranch ? text(input.vcsBranch, 200) : null
+      }
       const existing = state.artifactVersions.find(row => row.artifactId === artifactId && row.version === version)
       if (existing) {
         if (existing.checksum !== data.checksum || existing.uri !== data.uri || existing.previewUri !== data.previewUri) throw new Error('Artifact version already exists with different content')
         return
       }
+      if (input.stage) parent.stage = resolvedStage
+      if (input.toolUri && !parent.toolUri) parent.toolUri = data.toolUri
+      if (data.vcsRevision) parent.lastVcsRevision = data.vcsRevision
       state.artifactVersions.push({ id: id(), ...data, createdAt: new Date().toISOString() })
     },
     reviewArtifact (state, input, actor) {
@@ -119,14 +292,30 @@ module.exports = ({ text, find, id, build }) => {
       const priority = input.priority || 'normal'
       const type = input.type || 'task'
       if (!['low', 'normal', 'high', 'urgent'].includes(priority) || !['task', 'bug', 'feature'].includes(type)) throw new Error('Invalid task priority or type')
-      const values = { title: text(input.title), criteria: input.criteria ? text(input.criteria, 10000) : '', discipline: input.discipline ? text(input.discipline, 100) : '', assigneeId, priority, type, dueDate: date(input.dueDate), blockedReason: input.blockedReason ? text(input.blockedReason, 2000) : '', dependencies, milestoneId: reference(state.milestones, input.milestoneId), cycleId: reference(state.cycles, input.cycleId), documentIds: references(state.documents, input.documentIds) }
+      const values = {
+        title: text(input.title),
+        criteria: input.criteria ? text(input.criteria, 10000) : '',
+        discipline: input.discipline ? text(input.discipline, 100) : '',
+        phase: phase(input.phase, existing ? existing.phase || '' : ''),
+        stage: stage(input.stage, existing ? existing.stage || '' : ''),
+        toolUri: input.toolUri ? uri(input.toolUri) : (input.toolUri === '' ? null : (existing ? existing.toolUri || null : null)),
+        assigneeId,
+        priority,
+        type,
+        dueDate: date(input.dueDate),
+        blockedReason: input.blockedReason ? text(input.blockedReason, 2000) : '',
+        dependencies,
+        milestoneId: reference(state.milestones, input.milestoneId),
+        cycleId: reference(state.cycles, input.cycleId),
+        documentIds: references(state.documents, input.documentIds)
+      }
       if (existing) Object.assign(existing, values)
       else state.tasks.push({ id: taskId, ...values, status: 'backlog' })
     }
   }
   commands.integrationEvent = (state, input, actor) => {
     const source = text(input.source, 50)
-    if (!['geppetto', 'goethe', 'godot', 'unity', 'carnifex', 'generic', 'github'].includes(source)) throw new Error('Unsupported source')
+    if (!tools.includes(source)) throw new Error('Unsupported source')
     const eventId = text(input.eventId, 200)
     const canonical = value => {
       if (Array.isArray(value)) return value.map(canonical)
@@ -139,7 +328,7 @@ module.exports = ({ text, find, id, build }) => {
       if (existing.fingerprint !== fingerprint) throw new Error('Event ID reused with different content')
       return
     }
-    if (!['artifact', 'artifactVersion', 'build', 'validation'].includes(input.type)) throw new Error('Unsupported event type')
+    if (!['artifact', 'artifactVersion', 'artifactStage', 'build', 'validation', 'vcsStatus'].includes(input.type)) throw new Error('Unsupported event type')
     const payload = { ...input.payload, source }
     if (input.type === 'artifact') {
       const externalId = text(payload.externalId, 500)

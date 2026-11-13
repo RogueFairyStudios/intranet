@@ -70,6 +70,7 @@
               <h2>
                 {{ project.data.name }}
                 <small class="studio-badge">{{ t(project.data.kind) }}</small>
+                <small class="studio-badge">{{ t(project.data.phase || 'pre_production') }}</small>
                 <small
                   v-if="project.data.archived"
                   class="studio-badge"
@@ -92,7 +93,7 @@
               />
               <button
                 :disabled="busy"
-                @click="command('project', { name: project.data.name, kind: project.data.kind, archived: !project.data.archived })"
+                @click="command('project', { name: project.data.name, kind: project.data.kind, phase: project.data.phase || 'pre_production', archived: !project.data.archived })"
               >
                 {{ t(project.data.archived ? 'restore' : 'archive') }}
               </button>
@@ -145,6 +146,26 @@
                   >
                     {{ activePeople.slice(0, 5).map(person => person.name).join(', ') }}
                   </p>
+                </article>
+                <article class="studio-card">
+                  <h3>{{ t('inEngineCount') }}</h3>
+                  <p><strong>{{ inEngineArtifactsCount }} / {{ project.data.artifacts.length }}</strong></p>
+                  <p class="studio-muted">
+                    {{ t(project.data.phase || 'pre_production') }}
+                  </p>
+                </article>
+                <article class="studio-card">
+                  <h3>{{ t('vcsHealth') }}</h3>
+                  <p><strong>{{ project.data.repositories.length }}</strong> · {{ dirtyReposCount }} {{ t('dirtyRepos') }}</p>
+                  <p class="studio-muted">
+                    {{ activeLocksCount }} {{ t('locksCount') }}
+                  </p>
+                  <button
+                    type="button"
+                    @click="setTab('pipeline')"
+                  >
+                    {{ t('pipeline') }}
+                  </button>
                 </article>
               </div>
               <div class="studio-overview-grid">
@@ -245,6 +266,14 @@
                 </article>
               </div>
             </section>
+            <pipeline-panel
+              v-if="tab === 'pipeline'"
+              :key="project.id + '-pipeline'"
+              :project="project"
+              :t="t"
+              :busy="busy"
+              :command="command"
+            />
             <delivery-panel
               v-if="['planning', 'production', 'validation', 'releases'].includes(tab)"
               :key="project.id + tab"
@@ -544,7 +573,14 @@
                       {{ item.discipline ? item.discipline + ' · ' : '' }}{{ personName(item.assigneeId) }}
                     </p>
                     <p class="studio-muted">
-                      {{ t(item.priority || 'normal') }}{{ item.dueDate ? ' · ' + item.dueDate.slice(0, 10) : '' }}{{ item.blockedReason ? ' · ' + item.blockedReason : '' }}
+                      {{ t(item.priority || 'normal') }}{{ item.phase ? ' · ' + t(item.phase) : '' }}{{ item.stage ? ' · ' + t(item.stage) : '' }}{{ item.dueDate ? ' · ' + item.dueDate.slice(0, 10) : '' }}{{ item.blockedReason ? ' · ' + item.blockedReason : '' }}
+                    </p>
+                    <p v-if="item.toolUri">
+                      <uri-link
+                        :uri="item.toolUri"
+                        :t="t"
+                        compact
+                      />
                     </p>
                     <p
                       v-for="doc in project.data.documents.filter(row => (item.documentIds || []).includes(row.id))"
@@ -557,6 +593,13 @@
                       :key="artifact.id"
                     >
                       {{ t('artifacts') }}: {{ artifact.name }}
+                      <span class="studio-badge">{{ t(artifact.stage || 'concept') }}</span>
+                      <uri-link
+                        v-if="artifact.toolUri"
+                        :uri="artifact.toolUri"
+                        :t="t"
+                        compact
+                      />
                     </p>
                     <button
                       v-if="project.canEdit"
@@ -632,6 +675,8 @@ import SearchPicker from './search-picker.vue'
 import RecordForm from './record-form.vue'
 import DeliveryPanel from './delivery-panel.vue'
 import CreditsPanel from './credits-panel.vue'
+import PipelinePanel from './pipeline-panel.vue'
+import UriLink from './uri-link.vue'
 
 const studioProjectsQuery = gql`
   query {
@@ -676,7 +721,7 @@ const studioCommandMutation = gql`
   }
 `
 export default {
-  components: { SearchPicker, RecordForm, DeliveryPanel, CreditsPanel },
+  components: { SearchPicker, RecordForm, DeliveryPanel, CreditsPanel, PipelinePanel, UriLink },
   data () {
     const initialLocale = (document.documentElement.lang || (typeof siteConfig !== 'undefined' && siteConfig.lang) || 'en').toLowerCase()
     return {
@@ -690,12 +735,12 @@ export default {
       team: { name: '' },
       taskFilter: '',
       assigneeFilter: '',
-      sections: ['overview', 'team', 'documents', 'work', 'planning', 'production', 'validation', 'releases', 'credits', 'history'],
+      sections: ['overview', 'pipeline', 'team', 'documents', 'work', 'planning', 'production', 'validation', 'releases', 'credits', 'history'],
       statuses: ['backlog', 'ready', 'active', 'review', 'done'],
       accessRoles: ['reader', 'editor', 'manager', 'remove'],
       newProject: { name: '', kind: 'digital' },
       person: { name: '', teamId: '', userId: null, roleText: '', order: 0 },
-      task: { title: '', type: 'task', priority: 'normal', criteria: '', discipline: '', assigneeId: '', dependencies: [], documentIds: [], dueDate: '', blockedReason: '', milestoneId: '', cycleId: '' },
+      task: { title: '', type: 'task', priority: 'normal', criteria: '', discipline: '', phase: '', stage: '', toolUri: '', assigneeId: '', dependencies: [], documentIds: [], dueDate: '', blockedReason: '', milestoneId: '', cycleId: '' },
       access: { userId: null, role: 'reader' },
       document: { pageId: null },
       integration: { groupId: null, role: 'reader' },
@@ -711,7 +756,8 @@ export default {
     projectFields () {
       return [
         { key: 'name', required: true },
-        { key: 'kind', required: true, options: ['digital', 'analogue', 'hybrid'].map(id => ({ id, name: this.t(id) })) }
+        { key: 'kind', required: true, options: ['digital', 'analogue', 'hybrid'].map(id => ({ id, name: this.t(id) })) },
+        { key: 'phase', required: true, options: ['pre_production', 'production', 'post_production', 'live'].map(id => ({ id, name: this.t(id) })) }
       ]
     },
     taskFields () {
@@ -727,6 +773,9 @@ export default {
         { key: 'type', required: true, options: ['task', 'bug', 'feature'].map(id => ({ id, name: this.t(id) })) },
         { key: 'criteria', type: 'textarea' },
         { key: 'discipline' },
+        { key: 'phase', options: ['pre_production', 'production', 'post_production', 'live'].map(id => ({ id, name: this.t(id) })) },
+        { key: 'stage', options: ['concept', 'blockout', 'authoring', 'surface_loc', 'engine_integration', 'polish'].map(id => ({ id, name: this.t(id) })) },
+        { key: 'toolUri', maxlength: 4000 },
         options('assigneeId', 'participants'),
         { key: 'priority', required: true, options: ['low', 'normal', 'high', 'urgent'].map(id => ({ id, name: this.t(id) })) },
         { key: 'dueDate', type: 'date' },
@@ -778,6 +827,18 @@ export default {
     },
     recentReleases () {
       return this.project ? this.project.data.releases.slice(-5).reverse() : []
+    },
+    inEngineArtifactsCount () {
+      if (!this.project) return 0
+      return this.project.data.artifacts.filter(a => ['engine_integration', 'polish'].includes(a.stage)).length
+    },
+    dirtyReposCount () {
+      if (!this.project) return 0
+      return this.project.data.repositories.filter(r => r.status && !r.status.clean).length
+    },
+    activeLocksCount () {
+      if (!this.project) return 0
+      return this.project.data.repositories.reduce((sum, r) => sum + ((r.status && Array.isArray(r.status.locks)) ? r.status.locks.length : 0), 0)
     }
   },
   created () {
@@ -837,6 +898,7 @@ export default {
       return {
         ...row,
         data: {
+          phase: 'pre_production',
           teams: [],
           milestones: [],
           cycles: [],
@@ -844,6 +906,7 @@ export default {
           artifactVersions: [],
           artifactReviews: [],
           validations: [],
+          repositories: [],
           integrationAccess: [],
           integrationEvents: [],
           ...JSON.parse(row.state)
@@ -907,13 +970,18 @@ export default {
       }
     },
     resetTask () {
-      this.task = { title: '', type: 'task', priority: 'normal', criteria: '', discipline: '', assigneeId: '', dependencies: [], documentIds: [], dueDate: '', blockedReason: '', milestoneId: '', cycleId: '' }
+      this.task = { title: '', type: 'task', priority: 'normal', criteria: '', discipline: '', phase: '', stage: '', toolUri: '', assigneeId: '', dependencies: [], documentIds: [], dueDate: '', blockedReason: '', milestoneId: '', cycleId: '' }
     },
     async saveTask (input) {
       return this.command('task', input)
     },
     async saveProject (input) {
-      return this.command('project', { name: input.name, kind: input.kind, archived: !!input.archived })
+      return this.command('project', {
+        name: input.name,
+        kind: input.kind,
+        phase: input.phase || this.project.data.phase || 'pre_production',
+        archived: !!input.archived
+      })
     },
     async saveTeam () {
       if (await this.command('team', this.team)) this.team = { name: '' }
@@ -1194,6 +1262,168 @@ export default {
 .studio .project-meta {
   font-size: 0.76rem;
   opacity: 0.75;
+}
+.studio-phase-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 14px;
+  margin-bottom: 24px;
+}
+.studio-phase-card.is-active {
+  border-color: #71717a;
+}
+.theme--dark .studio-phase-card.is-active {
+  border-color: #a1a1aa;
+  background: #1f1f24;
+}
+.studio-phase-head,
+.studio-asset-header,
+.studio-vcs-flags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.studio-phase-head h4,
+.studio-asset-header h4 {
+  margin: 0;
+}
+.studio-asset-header .studio-badge,
+.studio-vcs-flags .studio-badge,
+.studio-phase-head .studio-badge {
+  margin-left: 0;
+}
+.studio-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+.studio-inline-form {
+  margin-top: 12px;
+}
+.studio-matrix-wrap {
+  overflow-x: auto;
+  margin-bottom: 24px;
+  border: 1px solid #e4e4e7;
+  border-radius: 6px;
+}
+.theme--dark .studio-matrix-wrap {
+  border-color: #26262a;
+}
+.studio-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 920px;
+}
+.studio-matrix th,
+.studio-matrix td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e4e4e7;
+  text-align: left;
+  vertical-align: top;
+}
+.theme--dark .studio-matrix th,
+.theme--dark .studio-matrix td {
+  border-bottom-color: #26262a;
+}
+.studio-matrix th {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: #f4f4f5;
+}
+.theme--dark .studio-matrix th {
+  background: #141417;
+  color: #a1a1aa;
+}
+.studio-matrix-asset {
+  min-width: 280px;
+}
+.studio-stage-td {
+  width: 125px;
+  vertical-align: middle;
+}
+.studio .studio-stage-cell {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 6px;
+  margin: 0;
+  font-size: 0.78rem;
+}
+.studio .studio-stage-cell.is-passed {
+  border-color: #52525b;
+  opacity: 0.9;
+}
+.studio .studio-stage-cell.is-upcoming {
+  background: transparent;
+  opacity: 0.72;
+}
+.theme--dark .studio .studio-stage-cell.is-upcoming {
+  background: #141417;
+  border-color: #26262a;
+  color: #a1a1aa;
+}
+.studio-stage-dot {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+.studio-stage-label {
+  text-align: center;
+  line-height: 1.15;
+}
+.studio-repo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 16px;
+}
+.studio-uri-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+}
+.studio-uri-row .studio-badge {
+  margin-left: 0;
+}
+.studio .studio-btn-inline {
+  padding: 3px 8px;
+  margin: 2px 0;
+  font-size: 0.76rem;
+}
+.studio-lock-badge {
+  border-color: #a16207;
+}
+.theme--dark .studio-lock-badge {
+  background: #272011;
+  border-color: #713f12;
+  color: #fde68a;
+}
+.studio-dirty-badge {
+  border-color: #b45309;
+}
+.theme--dark .studio-dirty-badge {
+  background: #271b14;
+  border-color: #7c2d12;
+  color: #fdba74;
+}
+.studio-clean-badge {
+  border-color: #52525b;
+}
+.theme--dark .studio-clean-badge {
+  background: #18221d;
+  border-color: #274032;
+  color: #bbf7d0;
+}
+.studio-lock-list {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #26262a;
 }
 @media (max-width: 860px) {
   .studio-layout {

@@ -1,12 +1,37 @@
 const crypto = require('crypto')
 
 const states = ['backlog', 'ready', 'active', 'review', 'done']
+const phases = ['pre_production', 'production', 'post_production', 'live']
+const stages = ['concept', 'blockout', 'authoring', 'surface_loc', 'engine_integration', 'polish']
+const tracks = ['general', 'art_2d', 'art_3d', 'narrative', 'spirit', 'scene_level', 'audio_vfx', 'code_system', 'typography', 'tabletop_print']
+const tools = ['generic', 'goethe', 'geppetto', 'godot', 'carnifex', 'animafaber', 'fontpit', 'lore', 'urc', 'uefn', 'unity', 'git', 'github']
+const uriProtocols = ['https:', 'http:', 'file:', 'goethe:', 'geppetto:', 'lore:', 'lores:', 'godot:', 'res:', 'uid:', 'carnifex:', 'animafaber:', 'fontpit:', 'uefn:', 'com.epicgames.launcher:']
+
 const id = () => crypto.randomUUID()
 const digest = manifest => crypto.createHash('sha256').update(JSON.stringify(manifest)).digest('hex')
 
+function hasControlChars (value) {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i)
+    if ((code >= 0 && code <= 8) || code === 11 || code === 12 || (code >= 14 && code <= 31) || code === 127) {
+      return true
+    }
+  }
+  return false
+}
+
 function text (value, maximum = 500) {
   if (typeof value !== 'string' || !value.trim() || value.length > maximum) throw new Error('Invalid text')
+  if (hasControlChars(value)) throw new Error('Invalid control characters')
   return value.trim()
+}
+
+function safeUri (value) {
+  const raw = text(value, 4000)
+  const parsed = new URL(raw)
+  if (!uriProtocols.includes(parsed.protocol)) throw new Error('Unsupported artifact location')
+  if (parsed.username || parsed.password) throw new Error('Artifact location must not contain credentials')
+  return parsed.href
 }
 
 function find (records, recordId) {
@@ -17,14 +42,57 @@ function find (records, recordId) {
 
 function createState (name, kind, ownerId) {
   if (!['digital', 'analogue', 'hybrid'].includes(kind)) throw new Error('Invalid project type')
-  return upgradeState({ projectId: id(), name: text(name), kind, ownerId, access: [], participants: [], tasks: [], documents: [], releases: [], credits: [], builds: [], history: [] })
+  return upgradeState({
+    projectId: id(),
+    name: text(name),
+    kind,
+    phase: 'pre_production',
+    ownerId,
+    access: [],
+    participants: [],
+    tasks: [],
+    documents: [],
+    releases: [],
+    credits: [],
+    builds: [],
+    repositories: [],
+    history: []
+  })
 }
 
-const collections = ['access', 'participants', 'tasks', 'documents', 'releases', 'credits', 'builds', 'history', 'teams', 'milestones', 'cycles', 'artifacts', 'artifactVersions', 'artifactReviews', 'validations', 'integrationEvents', 'integrationAccess']
+const collections = [
+  'access',
+  'participants',
+  'tasks',
+  'documents',
+  'releases',
+  'credits',
+  'builds',
+  'history',
+  'teams',
+  'milestones',
+  'cycles',
+  'artifacts',
+  'artifactVersions',
+  'artifactReviews',
+  'validations',
+  'repositories',
+  'integrationEvents',
+  'integrationAccess'
+]
 
 function upgradeState (state) {
   for (const collection of collections) {
     if (!Array.isArray(state[collection])) state[collection] = []
+  }
+  if (!phases.includes(state.phase)) state.phase = 'pre_production'
+  for (const artifact of state.artifacts) {
+    if (!stages.includes(artifact.stage)) artifact.stage = 'concept'
+    if (!tracks.includes(artifact.track)) artifact.track = 'general'
+    if (!tools.includes(artifact.tool)) artifact.tool = tools.includes(artifact.source) ? artifact.source : 'generic'
+    if (artifact.toolUri === undefined) artifact.toolUri = null
+    if (artifact.repoId === undefined) artifact.repoId = null
+    if (artifact.assetPath === undefined) artifact.assetPath = ''
   }
   return state
 }
@@ -113,22 +181,35 @@ const commands = {
     const name = text(input.name)
     let uri = null
     if (input.uri) {
-      const location = new URL(text(input.uri, 4000))
-      if (!['http:', 'https:', 'file:'].includes(location.protocol) || location.username || location.password) throw new Error('Invalid build location')
-      uri = location.href
+      try {
+        uri = safeUri(input.uri)
+      } catch (err) {
+        throw new Error('Invalid build location')
+      }
     }
     if (input.checksum && !/^[a-f0-9]{64}$/i.test(input.checksum)) throw new Error('Invalid build checksum')
     const artifactChecksum = input.checksum ? input.checksum.toLowerCase() : null
+    const vcsRevision = input.vcsRevision ? text(input.vcsRevision, 200) : null
     const existing = state.builds.find(build => build.releaseId === release.id && build.name === name)
     if (existing) {
       if (existing.snapshotId !== snapshot.id || (existing.uri || null) !== uri || (existing.artifactChecksum ? existing.artifactChecksum.toLowerCase() : null) !== artifactChecksum) throw new Error('Build identifier already has different content or credits')
       return
     }
-    state.builds.push({ id: id(), name, releaseId: release.id, snapshotId: snapshot.id, checksum: snapshot.checksum, artifactChecksum, uri })
+    state.builds.push({ id: id(), name, releaseId: release.id, snapshotId: snapshot.id, checksum: snapshot.checksum, artifactChecksum, uri, vcsRevision })
   }
 }
 
-Object.assign(commands, require('./studio-production')({ text, find, id, build: commands.build }))
+Object.assign(commands, require('./studio-production')({
+  text,
+  find,
+  id,
+  build: commands.build,
+  safeUri,
+  phases,
+  stages,
+  tracks,
+  tools
+}))
 
 function applyCommand (state, command, input, actor) {
   upgradeState(state)
@@ -147,4 +228,16 @@ function exportCredits (snapshot, format) {
   return '# ' + escape(snapshot.manifest.title) + '\n\n' + snapshot.manifest.entries.map(entry => '- ' + escape(entry.section) + ' / ' + escape(entry.role) + ' — ' + escape(entry.name)).join('\n') + '\n'
 }
 
-module.exports = { createState, applyCommand, exportCredits, find, upgradeState, collections }
+module.exports = {
+  createState,
+  applyCommand,
+  exportCredits,
+  find,
+  upgradeState,
+  collections,
+  phases,
+  stages,
+  tracks,
+  tools,
+  uriProtocols
+}

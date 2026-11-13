@@ -32,7 +32,25 @@
         :key="item.id"
         class="studio-card"
       >
-        <h4>{{ item.name || versionName(item) }}</h4>
+        <h4>
+          {{ item.name || versionName(item) }}
+          <span
+            v-if="item.phase"
+            class="studio-badge"
+          >{{ t(item.phase) }}</span>
+          <span
+            v-if="item.track"
+            class="studio-badge"
+          >{{ t(item.track) }}</span>
+          <span
+            v-if="item.stage"
+            class="studio-badge"
+          >{{ t(item.stage) }}</span>
+          <span
+            v-if="item.tool && item.tool !== 'generic'"
+            class="studio-badge"
+          >{{ t(item.tool) }}</span>
+        </h4>
         <p v-if="item.publishedAt">
           {{ t('published') }} · {{ item.publishedAt }}
         </p>
@@ -42,17 +60,23 @@
         <p v-if="item.dueDate || item.startDate || item.endDate || item.status || item.result || item.decision">
           {{ (item.dueDate || item.startDate || '').slice(0, 10) }} {{ (item.endDate || '').slice(0, 10) }} {{ (item.status || item.result || item.decision) ? t(item.status || item.result || item.decision) : '' }}
         </p>
+        <div v-if="item.toolUri">
+          <uri-link
+            :uri="item.toolUri"
+            :t="t"
+          />
+        </div>
+        <div v-if="item.uri">
+          <uri-link
+            :uri="item.uri"
+            :t="t"
+          />
+        </div>
         <p
-          v-if="item.uri"
+          v-if="item.vcsBranch || item.vcsRevision"
           class="checksum"
         >
-          <a
-            v-if="/^https?:/.test(item.uri)"
-            :href="item.uri"
-            target="_blank"
-            rel="noopener noreferrer"
-          >{{ item.uri }}</a>
-          <span v-else>{{ item.uri }}</span>
+          {{ t('vcsRevision') }}: {{ item.vcsBranch ? item.vcsBranch + ' · ' : '' }}{{ item.vcsRevision || '' }}
         </p>
         <p
           v-if="item.checksum"
@@ -101,9 +125,15 @@
 </template>
 <script>
 import RecordForm from './record-form.vue'
+import UriLink from './uri-link.vue'
+
+const phaseIds = ['pre_production', 'production', 'post_production', 'live']
+const stageIds = ['concept', 'blockout', 'authoring', 'surface_loc', 'engine_integration', 'polish']
+const trackIds = ['general', 'art_2d', 'art_3d', 'narrative', 'spirit', 'scene_level', 'audio_vfx', 'code_system', 'typography', 'tabletop_print']
+const toolIds = ['generic', 'goethe', 'geppetto', 'godot', 'carnifex', 'animafaber', 'fontpit', 'lore', 'urc', 'uefn', 'unity', 'git', 'github']
 
 export default {
-  components: { RecordForm },
+  components: { RecordForm, UriLink },
   props: {
     project: { type: Object, required: true },
     section: { type: String, required: true },
@@ -123,19 +153,19 @@ export default {
       const options = (key, collection, multiple = false) => ({
         key,
         multiple,
-        options: this.state[collection].map(item => ({ id: item.id, name: item.name || item.title || this.versionName(item) }))
+        options: (this.state[collection] || []).map(item => ({ id: item.id, name: item.name || item.title || this.versionName(item) }))
       })
-      const values = (key, list) => ({ key, required: true, options: list.map(id => ({ id, name: this.t(id) })) })
+      const values = (key, list, required = true) => ({ key, required, options: list.map(id => ({ id, name: this.t(id) })) })
       if (this.section === 'planning') {
         return [
-          { command: 'milestone', collection: 'milestones', label: 'milestones', editable: true, fields: [text('name', true), text('criteria', false, 'textarea'), text('dueDate', false, 'date')] },
+          { command: 'milestone', collection: 'milestones', label: 'milestones', editable: true, fields: [text('name', true), values('phase', phaseIds), text('criteria', false, 'textarea'), text('dueDate', false, 'date')] },
           { command: 'cycle', collection: 'cycles', label: 'cycles', editable: true, fields: [text('name', true), text('startDate', true, 'date'), text('endDate', true, 'date'), text('goal', false, 'textarea'), { key: 'capacity', type: 'number', min: 0 }] }
         ]
       }
       if (this.section === 'production') {
         return [
-          { command: 'artifact', collection: 'artifacts', label: 'artifacts', editable: true, fields: [text('name', true), text('kind', true), options('taskId', 'tasks'), options('documentIds', 'documents', true)] },
-          { command: 'artifactVersion', collection: 'artifactVersions', label: 'versions', fields: [{ ...options('artifactId', 'artifacts'), required: true }, text('version', true), text('uri', true), text('previewUri'), text('checksum', true)] },
+          { command: 'artifact', collection: 'artifacts', label: 'artifacts', editable: true, fields: [text('name', true), text('kind', true), values('track', trackIds), values('stage', stageIds), values('tool', toolIds), options('repoId', 'repositories'), { key: 'assetPath', maxlength: 1000 }, { key: 'toolUri', maxlength: 4000 }, options('taskId', 'tasks'), options('documentIds', 'documents', true)] },
+          { command: 'artifactVersion', collection: 'artifactVersions', label: 'versions', fields: [{ ...options('artifactId', 'artifacts'), required: true }, text('version', true), { key: 'uri', required: true, maxlength: 4000 }, { key: 'previewUri', maxlength: 4000 }, { key: 'toolUri', maxlength: 4000 }, values('stage', stageIds, false), text('vcsBranch'), text('vcsRevision'), text('checksum', true)] },
           { command: 'reviewArtifact', collection: 'artifactReviews', label: 'reviews', fields: [{ ...options('versionId', 'artifactVersions'), required: true }, values('decision', ['approved', 'changes']), text('comment', true, 'textarea')] }
         ]
       }

@@ -2,7 +2,15 @@
 
 Abra Projetos no cabeçalho da intranet ou acesse `/p/studio`. Visitantes não autenticados são redirecionados automaticamente para o SSO (Tellurian Authentik) e retornam ao destino após o login. Um administrador cria o projeto como digital, analógico ou híbrido e concede acesso aos gestores e colaboradores.
 
-A seção inicial **Visão geral** consolida marco atual, ciclo ativo, tarefas abertas/concluídas, participantes ativos, bloqueios em aberto, revisões pendentes, documentos desatualizados e últimas entregas, com links profundos preservados na URL (`?project=<id>&tab=<secao>&lang=<idioma>`).
+A seção inicial **Visão geral** consolida marco atual, ciclo ativo, tarefas abertas/concluídas, participantes ativos, progresso de integração de assets na engine, saúde dos repositórios VCS (Git e Lore/Epic URC), bloqueios em aberto, revisões pendentes, documentos desatualizados e últimas entregas, com links profundos preservados na URL (`?project=<id>&tab=<secao>&lang=<idioma>`).
+
+## Pipeline de desenvolvimento, URIs de ferramentas e VCS (Git & Lore)
+
+A seção **Pipeline** reflete as duas camadas das pipelines modernas de jogos:
+
+1. **Fases macro do projeto (`pre_production`, `production`, `post_production`, `live`)**: acompanha em que estágio macro o projeto se encontra, quantos marcos e tarefas pertencem a cada fase e permite aos gestores avançar ou ajustar a fase ativa do projeto.
+2. **Matriz não-linear de pipeline de assets (`concept`, `blockout`, `authoring`, `surface_loc`, `engine_integration`, `polish`)**: cada artefato/asset é classificado por disciplina (*track*), ferramenta do estúdio (`Goethe`, `Geppetto`, `Godot`, `Carnifex`, `AnimaFaber`, `Fontpit`, `Lore`, `UEFN`, etc.), caminho no repositório e URI direta de lançamento (`goethe://`, `geppetto://`, `godot://`, `carnifex://`, `lore://`, `uefn://`, `animafaber://`, `fontpit://`). Qualquer célula da matriz pode ser acionada para avançar **ou retornar** um asset de forma não-linear após testes na engine ou revisão de direção.
+3. **Versionamento Git & Lore (Epic Unreal Revision Control)**: registra os repositórios vinculados ao projeto (`git`, `lore`, `urc`), exibindo branch/stream atual, revisão (`SHA` ou `branch@N` BLAKE3), estado da working tree (limpa ou com modificações locais) e **locks exclusivos de arquivos binários** do Lore/URC correlacionados diretamente nas linhas da matriz de assets.
 
 ## Equipe e acesso
 

@@ -14,12 +14,46 @@ Para chaves da API Wiki.js, habilite a API conforme a configuração existente e
 
 ```text
 python integrations/cli/studio_client.py tasks
-python integrations/cli/studio_client.py artifact dialogue.gdkg --source goethe --artifact-id ARTIFACT_ID --version 1
+python integrations/cli/studio_client.py artifact dialogue.gdkg --source goethe --artifact-id ARTIFACT_ID --version 1 --stage engine_integration --tool-uri "goethe://open?repo=GhostLore&path=dialogues/intro.yaml"
+python integrations/cli/studio_client.py stage dlg-intro polish --source goethe --vcs-revision main@42
+python integrations/cli/studio_client.py vcs-sync D:/roguefairy/GhostLore --slug ghostlore
 python integrations/cli/studio_client.py credits SNAPSHOT_ID credits.json
-python integrations/cli/studio_client.py build game.zip --source carnifex --release-id RELEASE_ID --snapshot-id SNAPSHOT_ID --name build-001
+python integrations/cli/studio_client.py build game.zip --source carnifex --release-id RELEASE_ID --snapshot-id SNAPSHOT_ID --name build-001 --vcs-revision a1b2c3d4
 python integrations/cli/studio_client.py event event.json
 python integrations/cli/studio_client.py flush --force
 ```
+
+## Sincronização de status Git & Lore (Epic Unreal Revision Control)
+
+O subcomando `vcs-sync` detecta automaticamente repositórios **Git** (`.git`), **Lore** (`.lore` — implementação open-source do Unreal Revision Control da Epic Games em `lores://` / `lore://`) e workspaces **UEFN / URC** (`*.uefnproject` / `.urc`), enviando eventos `vcsStatus` idempotentes para o projeto:
+
+- **Git**: branch atual, commit `SHA`, mensagem/autor, contadores `ahead`/`behind`, arquivos modificados/staged e remoção automática de credenciais em `remote.origin.url`.
+- **Lore (`lore --json`)**: consome os fluxos NDJSON de `lore --repository <dir> --json revision info`, `status` e `lock query`, publicando revisão `branch@N` (assinatura BLAKE3), estado de compressão (`zstd`), arquivos binários modificados localmente e **locks exclusivos ativos** (`owner`, `path`, `branch`, `lockedAt`).
+- **UEFN / Epic URC**: lê metadados de `*.uefnproject` (`bindings.projectId`) e presença de `.urc` (`oodle`), vinculando a URI `uefn://`.
+
+Pode ser executado manualmente por artistas/engenheiros, em *git hooks* (`post-commit`, `post-merge`) ou em jobs de CI.
+
+## Handlers de URI das ferramentas (`rogue_uri_handler.py`)
+
+O despachante multiplataforma `integrations/uri_handler/rogue_uri_handler.py` registra os protocolos customizados do estúdio no escopo do usuário (`HKCU\Software\Classes` no Windows e `~/.local/share/applications/*.desktop` via `xdg-mime` no Linux), permitindo abrir assets diretamente a partir de `/p/studio`:
+
+```text
+python integrations/uri_handler/rogue_uri_handler.py install --workspace-root D:/roguefairy
+python integrations/uri_handler/rogue_uri_handler.py doctor
+python integrations/uri_handler/rogue_uri_handler.py open "goethe://open?repo=GhostLore&path=dialogues/intro.yaml" --dry-run
+```
+
+Protocolos suportados:
+- `goethe://open?repo=<repo>&path=<arquivo.yaml>[&node=<id>]` → `goethe_imgui_demo` (ou VS Code para `.gproj.yaml`)
+- `geppetto://open?repo=<repo>&path=<arte.kra>[&workspace=<ws>][&layer=<camada>]` → `krita --nosplash -- <arquivo>`
+- `godot://open?project=<dir>[&scene=res://cena.tscn][&debug=1]` → `godot --path <dir> -e`
+- `carnifex://open?game=<dir>[&mod=<mod>][&map=<mapa>]` → `carnifex -basedir <dir> -window +map <mapa>`
+- `lore://open?repo=<repo>[&path=<asset>][&action=reveal|sync]` → revela no gerenciador de arquivos ou executa `lore sync --root-file`
+- `uefn://open?project=<dir_ou_uefnproject>[&verse=1]` → abre no UEFN ou workspace Verse
+- `animafaber://open?spirit=<id>` → abre o espírito no AnimaFaber (`https://`)
+- `fontpit://open?family=<slug>[&mode=web|cli]` → inspeciona a família tipográfica no Fontpit
+
+Por segurança, o despachante valida contenção estrita de caminhos dentro de `workspaceRoot`, bloqueia *path traversal* (`..`), rejeita argumentos iniciados por `-` e nunca invoca `shell=True`.
 
 Crie o artefato na intranet para obter seu ID. Integrações também podem registrar artefatos com o tipo de evento `artifact`, contendo `name`, `kind` e `externalId`. Eventos `artifactVersion` posteriores podem identificar esse registro por `externalId` e origem.
 

@@ -67,4 +67,111 @@ describe('studio production lifecycle', () => {
     expect(state.releases[0].publishedAt).toBeTruthy()
     expect(() => command('release', { id: releaseId, name: 'Changed' })).toThrow('immutable')
   })
+  test('models macro phases and non-linear asset pipeline transitions with studio URIs', () => {
+    expect(state.phase).toBe('pre_production')
+    command('project', { name: 'GhostLore', kind: 'digital', phase: 'production', archived: false })
+    expect(state.phase).toBe('production')
+    expect(() => command('project', { name: 'GhostLore', kind: 'digital', phase: 'waterfall' })).toThrow('phase')
+
+    command('milestone', { name: 'Vertical Slice', phase: 'production' })
+    command('task', {
+      title: 'Intro Dialogue',
+      phase: 'production',
+      stage: 'authoring',
+      toolUri: 'goethe://open?repo=GhostLore&path=dialogues%2Fintro.yaml&node=start'
+    })
+    expect(state.tasks[0].toolUri).toContain('goethe://')
+
+    command('artifact', {
+      name: 'Intro Dialogue Graph',
+      kind: 'dialogue',
+      track: 'narrative',
+      stage: 'concept',
+      tool: 'goethe',
+      assetPath: 'dialogues/intro.yaml',
+      toolUri: 'goethe://open?repo=GhostLore&path=dialogues%2Fintro.yaml',
+      taskId: state.tasks[0].id
+    })
+    const artifactId = state.artifacts[0].id
+    command('artifactStage', { id: artifactId, stage: 'engine_integration', vcsRevision: 'abc12345' })
+    expect(state.artifacts[0].stage).toBe('engine_integration')
+    // Non-linear backward transition after in-engine director review:
+    command('artifactStage', { id: artifactId, stage: 'blockout', note: 'Adjust pacing in previs' })
+    expect(state.artifacts[0].stage).toBe('blockout')
+    expect(state.artifacts[0].stageNote).toBe('Adjust pacing in previs')
+
+    // Custom protocol allowlist vs credential / script URI rejection
+    command('artifactVersion', {
+      artifactId,
+      version: 'v1',
+      uri: 'lores://lore.roguefairy.net:41337/ghostlore/dialogues/intro.gdkg',
+      toolUri: 'godot://open?project=GhostLore&scene=res%3A%2F%2Fscenes%2Fintro.tscn',
+      stage: 'polish',
+      vcsBranch: 'main',
+      vcsRevision: 'main@14',
+      checksum: 'c'.repeat(64)
+    })
+    expect(state.artifacts[0].stage).toBe('polish')
+    expect(() => command('artifact', { name: 'Bad', kind: 'art', toolUri: 'goethe://user:secret@open?path=a' })).toThrow('credentials')
+    expect(() => command('artifact', { name: 'Bad', kind: 'art', toolUri: 'data:text/html,1' })).toThrow('Unsupported')
+  })
+  test('tracks Git and Lore (Epic URC) repositories, working tree status, and binary file locks', () => {
+    command('repository', {
+      name: 'GhostLore Git',
+      slug: 'ghostlore-code',
+      system: 'git',
+      remoteUri: 'git@github.com:RogueFairyStudios/GhostLore.git',
+      defaultBranch: 'main',
+      workspacePath: 'GhostLore'
+    })
+    expect(() => command('repository', {
+      name: 'Duplicate',
+      slug: 'ghostlore-code',
+      system: 'git'
+    })).toThrow('slug')
+    expect(() => command('repository', {
+      name: 'Leaked Creds',
+      slug: 'leaked',
+      system: 'lore',
+      remoteUri: 'lores://token:secret@lore.roguefairy.net:41337/art'
+    })).toThrow('credentials')
+
+    // Auto-upsert Lore (Epic URC) repository and locks via integrationEvent
+    command('integrationEvent', {
+      source: 'lore',
+      eventId: 'lore-sync-1',
+      type: 'vcsStatus',
+      payload: {
+        slug: 'ghostlore-art',
+        name: 'GhostLore Art (Lore)',
+        system: 'lore',
+        remoteUri: 'lores://lore.roguefairy.net:41337/ghostlore-art',
+        branch: 'main',
+        revision: 'f'.repeat(64),
+        revisionNumber: 42,
+        commitMessage: 'Lock & sculpt spirit bust',
+        author: 'artist@roguefairy.net',
+        modifiedFiles: ['Content/Characters/Spirit.uasset'],
+        locks: [
+          {
+            path: 'Content/Characters/Spirit.uasset',
+            owner: 'artist@roguefairy.net',
+            branch: 'main',
+            lockedAt: '2026-11-13T12:00:00Z'
+          }
+        ],
+        compression: 'zstd'
+      }
+    })
+    const loreRepo = state.repositories.find(r => r.slug === 'ghostlore-art')
+    expect(loreRepo).toBeTruthy()
+    expect(loreRepo.status.clean).toBe(false)
+    expect(loreRepo.status.revisionNumber).toBe(42)
+    expect(loreRepo.status.locks).toHaveLength(1)
+    expect(loreRepo.status.locks[0].owner).toBe('artist@roguefairy.net')
+    expect(() => command('vcsStatus', {
+      repositoryId: loreRepo.id,
+      modifiedFiles: ['../../etc/passwd']
+    })).toThrow('Invalid asset path')
+  })
 })

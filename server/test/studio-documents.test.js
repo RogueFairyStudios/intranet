@@ -7,6 +7,8 @@ describe('studio document templates', () => {
     expect(templates.list('pt-br').map(item => item.key)).toEqual(templates.list('en').map(item => item.key))
     expect(templates.render('tabletop', 'pt-br', 'Regras')).toContain('Lista de componentes')
     expect(templates.render('gdd', 'en', 'Design')).toContain('Gameplay loop')
+    expect(templates.render('pipeline', 'pt-br', 'Pipeline')).toContain('Lore')
+    expect(templates.render('pipeline', 'en', 'Pipeline')).toContain('goethe://')
     expect(() => templates.render('unknown', 'en', 'Title')).toThrow()
   })
   test('reuses a created draft after a concurrent project update', async () => {

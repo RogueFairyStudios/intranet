@@ -167,6 +167,10 @@
         v-model="build.uri"
         maxlength="4000"
       ></label>
+      <label>{{ t('vcsRevision') }}<input
+        v-model="build.vcsRevision"
+        maxlength="200"
+      ></label>
       <label>{{ t('artifactChecksum') }}<input
         v-model="build.checksum"
         maxlength="64"
@@ -191,26 +195,27 @@
         {{ t('artifactChecksum') }}: {{ item.artifactChecksum }}
       </p>
       <p
-        v-if="item.uri"
+        v-if="item.vcsRevision"
         class="checksum"
       >
-        <a
-          v-if="/^https?:/.test(item.uri)"
-          :href="item.uri"
-          target="_blank"
-          rel="noopener noreferrer"
-        >{{ item.uri }}</a>
-        <span v-else>{{ item.uri }}</span>
+        {{ t('vcsRevision') }}: {{ item.vcsRevision }}
       </p>
+      <div v-if="item.uri">
+        <uri-link
+          :uri="item.uri"
+          :t="t"
+        />
+      </div>
     </article>
   </section>
 </template>
 <script>
 import gql from 'graphql-tag'
 import FileUpload from './file-upload.vue'
+import UriLink from './uri-link.vue'
 
 export default {
-  components: { FileUpload },
+  components: { FileUpload, UriLink },
   props: {
     project: { type: Object, required: true },
     busy: Boolean,
@@ -223,7 +228,7 @@ export default {
       release: { name: '' },
       creditSelection: { releaseId: '', participantIds: [] },
       creditEdit: { id: '', entries: [], reason: '' },
-      build: { name: '', releaseId: '', snapshotId: '', uri: '', checksum: '' }
+      build: { name: '', releaseId: '', snapshotId: '', uri: '', vcsRevision: '', checksum: '' }
     }
   },
   computed: {
@@ -251,10 +256,12 @@ export default {
         snapshotId: this.build.snapshotId
       }
       if (this.build.uri) payload.uri = this.build.uri
+      if (this.build.vcsRevision) payload.vcsRevision = this.build.vcsRevision
       if (this.build.checksum) payload.checksum = this.build.checksum
       if (await this.command('build', payload)) {
         this.build.name = ''
         this.build.uri = ''
+        this.build.vcsRevision = ''
         this.build.checksum = ''
       }
     },
