@@ -9,6 +9,8 @@ describe('studio document templates', () => {
     expect(templates.render('gdd', 'en', 'Design')).toContain('Gameplay loop')
     expect(templates.render('pipeline', 'pt-br', 'Pipeline')).toContain('Lore')
     expect(templates.render('pipeline', 'en', 'Pipeline')).toContain('goethe://')
+    expect(templates.render('storefront', 'pt-br', 'Lojas')).toContain('ClassInd')
+    expect(templates.render('storefront', 'en', 'Storefronts')).toContain('Lotcheck')
     expect(() => templates.render('unknown', 'en', 'Title')).toThrow()
   })
   test('reuses a created draft after a concurrent project update', async () => {

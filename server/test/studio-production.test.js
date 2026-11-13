@@ -174,4 +174,98 @@ describe('studio production lifecycle', () => {
       modifiedFiles: ['../../etc/passwd']
     })).toThrow('Invalid asset path')
   })
+  test('populates storefront presets and gates release publication on compliance and store assets', () => {
+    const majorStores = ['steam', 'epic', 'apple_app_store', 'google_play', 'playstation', 'xbox', 'nintendo', 'igdb', 'bgg_tabletop']
+    for (const sf of majorStores) {
+      command('platformTarget', { storefront: sf, locale: 'pt' })
+    }
+    expect(state.platformTargets).toHaveLength(majorStores.length)
+    const steam = state.platformTargets.find(t => t.storefront === 'steam')
+    expect(steam.checklist.some(c => c.category === 'technical' && c.title.includes('SteamPipe'))).toBe(true)
+    expect(steam.checklist.some(c => c.category === 'bureaucratic' && c.title.includes('ClassInd'))).toBe(true)
+    expect(steam.assets.some(a => a.name === 'Header Capsule' && a.dimensions === '920×430 px')).toBe(true)
+    expect(steam.assets.some(a => a.name === 'Library Hero' && a.dimensions === '3840×1240 px')).toBe(true)
+
+    const igdb = state.platformTargets.find(t => t.storefront === 'igdb')
+    expect(igdb.assets.some(a => a.dimensions.includes('1080×1440'))).toBe(true)
+
+    // Setup a release linked to IGDB target to test publication gating
+    command('participant', { name: 'Producer', roles: ['Production'] })
+    command('artifact', { name: 'Master Build', kind: 'binary' })
+    command('artifactVersion', {
+      artifactId: state.artifacts[0].id,
+      version: '1.0.0',
+      uri: 'https://docs.roguefairy.net/p/studio/files/pkg.zip',
+      checksum: 'd'.repeat(64)
+    })
+    const versionId = state.artifactVersions[0].id
+    command('reviewArtifact', { versionId, decision: 'approved' })
+    command('release', {
+      name: '1.0 Launch',
+      criteria: 'Gold Master',
+      artifactVersionIds: [versionId],
+      platformTargetIds: [igdb.id]
+    })
+    const releaseId = state.releases[0].id
+    command('generateCredits', { releaseId, participantIds: [state.participants[0].id] })
+    command('approveCredits', { id: state.credits[0].id })
+    command('build', { name: 'GM-1', releaseId, snapshotId: state.credits[0].id })
+    command('validation', { name: 'QA Cert', kind: 'test', result: 'passed', releaseId, artifactVersionId: versionId })
+    command('release', {
+      id: releaseId,
+      name: '1.0 Launch',
+      criteria: 'Gold Master',
+      artifactVersionIds: [versionId],
+      validationIds: [state.validations[0].id],
+      platformTargetIds: [igdb.id]
+    })
+
+    // Blocked while IGDB technical/bureaucratic checks are pending
+    expect(() => command('publishRelease', { id: releaseId })).toThrow('Platform compliance checklist incomplete')
+
+    // N/A without justification must fail
+    expect(() => command('platformCheckItem', {
+      targetId: igdb.id,
+      id: igdb.checklist[0].id,
+      status: 'na'
+    })).toThrow('waiver justification')
+
+    // Complete or waive all IGDB checks
+    command('platformCheckItem', {
+      targetId: igdb.id,
+      id: igdb.checklist[0].id,
+      status: 'na',
+      waiverReason: 'Single-store launch initially'
+    })
+    for (const chk of igdb.checklist.slice(1)) {
+      command('platformCheckItem', { targetId: igdb.id, id: chk.id, status: 'done' })
+    }
+
+    // Still blocked because IGDB storefront assets are pending
+    expect(() => command('publishRelease', { id: releaseId })).toThrow('Storefront assets incomplete')
+
+    // Marking an asset slot done without URI or artifactVersionId must fail
+    expect(() => command('platformAssetSlot', {
+      targetId: igdb.id,
+      id: igdb.assets[0].id,
+      status: 'done'
+    })).toThrow('Attach an artifact version or file URI')
+
+    // Provide storefront assets (including Geppetto source toolUri)
+    for (const slot of igdb.assets) {
+      command('platformAssetSlot', {
+        targetId: igdb.id,
+        id: slot.id,
+        status: 'done',
+        uri: 'https://docs.roguefairy.net/p/studio/files/' + slot.id + '.png',
+        toolUri: 'geppetto://open?repo=GhostLore&path=marketing%2Figdb_cover.kra',
+        checksum: 'e'.repeat(64)
+      })
+    }
+
+    // Now release publishes cleanly and snapshots platformTargetIds
+    command('publishRelease', { id: releaseId })
+    expect(state.releases[0].publishedAt).toBeTruthy()
+    expect(state.releases[0].platformTargetIds).toEqual([igdb.id])
+  })
 })

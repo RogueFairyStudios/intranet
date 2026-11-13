@@ -23,14 +23,29 @@
           {{ t('openTasks') }}: <strong>{{ tasksInPhase(phase, false) }}</strong> ·
           {{ t('completedTasks') }}: <strong>{{ tasksInPhase(phase, true) }}</strong>
         </p>
-        <button
-          v-if="project.canManage && state.phase !== phase"
-          type="button"
-          :disabled="busy"
-          @click="setProjectPhase(phase)"
+        <p
+          v-if="phase === 'post_production'"
+          class="studio-muted"
         >
-          {{ t('setPhase') }}
-        </button>
+          {{ t('distribution') }}: <strong>{{ activeStorefrontsCount }}</strong>
+        </p>
+        <div>
+          <button
+            v-if="project.canManage && state.phase !== phase"
+            type="button"
+            :disabled="busy"
+            @click="setProjectPhase(phase)"
+          >
+            {{ t('setPhase') }}
+          </button>
+          <button
+            v-if="phase === 'post_production'"
+            type="button"
+            @click="$emit('open-section', 'distribution')"
+          >
+            {{ t('distribution') }}
+          </button>
+        </div>
       </article>
     </div>
 
@@ -504,6 +519,9 @@ export default {
   computed: {
     state () {
       return this.project.data
+    },
+    activeStorefrontsCount () {
+      return (this.state.platformTargets || []).filter(t => !t.archived).length
     },
     filteredArtifacts () {
       const needle = this.artifactFilter.trim().toLowerCase()

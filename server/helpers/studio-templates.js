@@ -34,6 +34,10 @@ const templates = {
   pipeline: {
     pt: ['Plano de pipeline e integração de assets', 'Fases macro (Pré-produção, Produção, Pós-produção)', 'Tracks e estágios não-lineares de assets', 'Ferramentas e URI handlers (goethe://, geppetto://, godot://, carnifex://, lore://)', 'Repositórios Git e Lore (Epic URC) — branches e locks', 'Integração contínua na engine e revisão de direção', 'Critérios de polimento, otimização e QA'],
     en: ['Asset pipeline and integration plan', 'Macro phases (Pre-production, Production, Post-production)', 'Non-linear asset tracks and stages', 'Studio tools and URI handlers (goethe://, geppetto://, godot://, carnifex://, lore://)', 'Git and Lore (Epic URC) repositories — branches and locks', 'Continuous engine integration and director review', 'Polish, optimization and QA exit criteria']
+  },
+  storefront: {
+    pt: ['Dossiê de publicação, conformidade e lojas', 'Plataformas-alvo e identificadores (AppID, Bundle ID, Concept ID)', 'Conformidade técnica (Steamworks, TRC, XR, Lotcheck, Guidelines)', 'Requisitos burocráticos, fiscais e jurídicos (EULA, LGPD/GDPR, licenças)', 'Classificação indicativa (ClassInd, IARC, ESRB, PEGI, CERO)', 'Copy localizada da loja (sinopse curta, descrição longa, tags e keywords)', 'Catálogo de assets de vitrine, cápsulas, ícones e trailers', 'Plano de submissão, janela de revisão e checklist de lançamento'],
+    en: ['Storefront, compliance and submission dossier', 'Target platforms and identifiers (AppID, Bundle ID, Concept ID)', 'Technical compliance (Steamworks, TRC, XR, Lotcheck, Guidelines)', 'Bureaucratic, tax and legal requirements (EULA, GDPR/LGPD, licenses)', 'Age ratings (ClassInd, IARC, ESRB, PEGI, CERO)', 'Localized store copy (short pitch, full description, tags and keywords)', 'Storefront graphical assets, capsules, icons and trailers', 'Submission schedule, review window and launch checklist']
   }
 }
 

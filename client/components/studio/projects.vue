@@ -167,6 +167,16 @@
                     {{ t('pipeline') }}
                   </button>
                 </article>
+                <article class="studio-card">
+                  <h3>{{ t('storefrontReadiness') }}</h3>
+                  <p><strong>{{ readyPlatformsCount }} / {{ activePlatformsCount }}</strong> · {{ t('platformsReady') }}</p>
+                  <button
+                    type="button"
+                    @click="setTab('distribution')"
+                  >
+                    {{ t('distribution') }}
+                  </button>
+                </article>
               </div>
               <div class="studio-overview-grid">
                 <article class="studio-card">
@@ -269,6 +279,15 @@
             <pipeline-panel
               v-if="tab === 'pipeline'"
               :key="project.id + '-pipeline'"
+              :project="project"
+              :t="t"
+              :busy="busy"
+              :command="command"
+              @open-section="setTab"
+            />
+            <distribution-panel
+              v-if="tab === 'distribution'"
+              :key="project.id + '-distribution'"
               :project="project"
               :t="t"
               :busy="busy"
@@ -676,6 +695,7 @@ import RecordForm from './record-form.vue'
 import DeliveryPanel from './delivery-panel.vue'
 import CreditsPanel from './credits-panel.vue'
 import PipelinePanel from './pipeline-panel.vue'
+import DistributionPanel from './distribution-panel.vue'
 import UriLink from './uri-link.vue'
 
 const studioProjectsQuery = gql`
@@ -721,7 +741,7 @@ const studioCommandMutation = gql`
   }
 `
 export default {
-  components: { SearchPicker, RecordForm, DeliveryPanel, CreditsPanel, PipelinePanel, UriLink },
+  components: { SearchPicker, RecordForm, DeliveryPanel, CreditsPanel, PipelinePanel, DistributionPanel, UriLink },
   data () {
     const initialLocale = (document.documentElement.lang || (typeof siteConfig !== 'undefined' && siteConfig.lang) || 'en').toLowerCase()
     return {
@@ -735,7 +755,7 @@ export default {
       team: { name: '' },
       taskFilter: '',
       assigneeFilter: '',
-      sections: ['overview', 'pipeline', 'team', 'documents', 'work', 'planning', 'production', 'validation', 'releases', 'credits', 'history'],
+      sections: ['overview', 'pipeline', 'team', 'documents', 'work', 'planning', 'production', 'validation', 'distribution', 'releases', 'credits', 'history'],
       statuses: ['backlog', 'ready', 'active', 'review', 'done'],
       accessRoles: ['reader', 'editor', 'manager', 'remove'],
       newProject: { name: '', kind: 'digital' },
@@ -839,6 +859,19 @@ export default {
     activeLocksCount () {
       if (!this.project) return 0
       return this.project.data.repositories.reduce((sum, r) => sum + ((r.status && Array.isArray(r.status.locks)) ? r.status.locks.length : 0), 0)
+    },
+    activePlatformsCount () {
+      if (!this.project) return 0
+      return (this.project.data.platformTargets || []).filter(t => !t.archived).length
+    },
+    readyPlatformsCount () {
+      if (!this.project) return 0
+      return (this.project.data.platformTargets || []).filter(t => {
+        if (t.archived) return false
+        const checksOk = (t.checklist || []).filter(c => c.required !== false).every(c => c.status === 'done' || (c.status === 'na' && c.waiverReason))
+        const assetsOk = (t.assets || []).filter(a => a.required !== false).every(a => (a.status === 'done' && (a.artifactVersionId || a.uri)) || (a.status === 'na' && a.waiverReason))
+        return checksOk && assetsOk
+      }).length
     }
   },
   created () {
@@ -907,6 +940,7 @@ export default {
           artifactReviews: [],
           validations: [],
           repositories: [],
+          platformTargets: [],
           integrationAccess: [],
           integrationEvents: [],
           ...JSON.parse(row.state)
@@ -1424,6 +1458,21 @@ export default {
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid #26262a;
+}
+.studio-platform-detail {
+  margin-top: 24px;
+}
+.studio-platform-block {
+  margin-bottom: 28px;
+}
+.studio-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.studio-inline-actions button {
+  margin-right: 0;
 }
 @media (max-width: 860px) {
   .studio-layout {

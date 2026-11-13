@@ -56,6 +56,7 @@ function createState (name, kind, ownerId) {
     credits: [],
     builds: [],
     repositories: [],
+    platformTargets: [],
     history: []
   })
 }
@@ -77,6 +78,7 @@ const collections = [
   'artifactReviews',
   'validations',
   'repositories',
+  'platformTargets',
   'integrationEvents',
   'integrationAccess'
 ]
@@ -93,6 +95,10 @@ function upgradeState (state) {
     if (artifact.toolUri === undefined) artifact.toolUri = null
     if (artifact.repoId === undefined) artifact.repoId = null
     if (artifact.assetPath === undefined) artifact.assetPath = ''
+  }
+  for (const target of state.platformTargets) {
+    if (!Array.isArray(target.checklist)) target.checklist = []
+    if (!Array.isArray(target.assets)) target.assets = []
   }
   return state
 }

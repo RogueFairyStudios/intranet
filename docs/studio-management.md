@@ -30,6 +30,15 @@ Cadastre artefatos associados às tarefas e documentos. Cada versão possui loca
 
 Registre testes e playtests com resultado, observações e referências à tarefa, entrega ou versão avaliada. Jogos analógicos podem usar artefatos de cartas, regras, tabuleiros, componentes e arquivos de impressão no mesmo fluxo.
 
+## Pós-produção: Lojas, Conformidade & Publicação (`Lojas & Conformidade`)
+
+Na fase de **Pós-produção** (acessível pela aba **Lojas & Conformidade** ou pelo atalho direto no card de Pós-produção da Pipeline), o projeto organiza a preparação por plataforma/loja de destino:
+
+- **Presets oficiais por loja/catálogo**: **Steam (Steamworks)**, **Epic Games Store**, **Apple App Store (iOS/macOS)**, **Google Play Store**, **Sony PlayStation Store (TRC)**, **Xbox / Microsoft Store (XR)**, **Nintendo eShop (Lotcheck)**, **IGDB / Twitch Directory**, **GOG / Itch.io**, **Tabletop / Gráfica, Varejo & BGG** e plataformas customizadas.
+- **Checklists Técnicos e Burocráticos/Legais**: itens técnicos (SteamPipe, Steam Deck, EOS, `PrivacyInfo.xcprivacy`/ATT, Android `.aab` 16 KB/Data Safety, TRC, XR, Lotcheck, pré-impressão CMYK) e burocráticos/legais (ClassInd, IARC, ESRB, PEGI, formulários fiscais `W-8BEN-E`, EULA, LGPD/GDPR, direitos de fontes/músicas e divulgação de IA).
+- **Assets obrigatórios de Storefront**: slots com dimensões e formatos oficiais de cada loja (ex.: Steam Header Capsule `920×430`, Main `1232×706`, Vertical `748×896`, Library Hero `3840×1240`; Epic `2560×1440` e `1200×1600`; Apple `1024×1024` e iPhone `6.9"` `1320×2868`; Google Play `512×512` e Feature Graphic `1024×500`; Xbox `2160×2160` e `1440×2160`; Switch `1024×1024` e `1920×1080`; IGDB Cover `3:4` `1080×1440`), permitindo upload privado direto com SHA-256, vínculo a versões de artefatos do estúdio e URI `geppetto://` para o arquivo fonte editável (`.kra`/`.psd`).
+- **Trava de publicação de Entregas**: quando uma plataforma é vinculada a uma **Entrega**, `Publicar entrega` exige que todos os checklists e assets obrigatórios da loja estejam concluídos (com arquivo/versão anexado) ou marcados como **N/A** mediante justificativa registrada.
+
 ## Créditos e entregas
 
 Crie a entrega e selecione os participantes creditados. Revise nomes, funções, seções e ordem antes da aprovação. Uma revisão editorial posterior cria outro rascunho e preserva a versão aprovada anterior.

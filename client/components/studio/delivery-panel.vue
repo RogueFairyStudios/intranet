@@ -105,6 +105,15 @@
         >
           {{ t('validation') }}: {{ linkedName('validations', validationId) }}
         </p>
+        <p
+          v-for="target in (group.command === 'release' ? releaseTargetsFor(item) : [])"
+          :key="target.id"
+        >
+          {{ t('distribution') }}: <strong>{{ target.name }}</strong>
+          <span :class="['studio-badge', targetReady(target) ? 'studio-clean-badge' : 'studio-dirty-badge']">
+            {{ targetReady(target) ? t('submissionReady') : t('submissionPending') }}
+          </span>
+        </p>
         <button
           v-if="project.canEdit && group.editable && !item.publishedAt"
           :disabled="busy"
@@ -174,10 +183,20 @@ export default {
           { command: 'validation', collection: 'validations', label: 'validation', fields: [text('name', true), options('releaseId', 'releases'), options('artifactVersionId', 'artifactVersions'), values('kind', ['test', 'playtest']), values('result', ['pending', 'passed', 'failed']), text('notes', false, 'textarea'), options('taskId', 'tasks')] }
         ]
       }
-      return [{ command: 'release', collection: 'releases', label: 'releases', editable: true, fields: [text('name', true), text('criteria', false, 'textarea'), options('artifactVersionIds', 'artifactVersions', true), options('validationIds', 'validations', true)] }]
+      return [{ command: 'release', collection: 'releases', label: 'releases', editable: true, fields: [text('name', true), text('criteria', false, 'textarea'), options('artifactVersionIds', 'artifactVersions', true), options('validationIds', 'validations', true), options('platformTargetIds', 'platformTargets', true)] }]
     }
   },
   methods: {
+    releaseTargetsFor (item) {
+      if (!item || !Array.isArray(this.state.platformTargets)) return []
+      const explicit = new Set(item.platformTargetIds || [])
+      return this.state.platformTargets.filter(target => !target.archived && (target.releaseId === item.id || explicit.has(target.id)))
+    },
+    targetReady (target) {
+      const checksOk = (target.checklist || []).filter(c => c.required !== false).every(c => c.status === 'done' || (c.status === 'na' && c.waiverReason))
+      const assetsOk = (target.assets || []).filter(a => a.required !== false).every(a => (a.status === 'done' && (a.artifactVersionId || a.uri)) || (a.status === 'na' && a.waiverReason))
+      return checksOk && assetsOk
+    },
     linkedName (collection, id) {
       const item = this.state[collection].find(row => row.id === id)
       return item ? item.name || item.title || this.versionName(item) : this.t('none')

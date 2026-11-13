@@ -1,4 +1,12 @@
 const crypto = require('crypto')
+const {
+  storefronts,
+  submissionStatuses,
+  itemStatuses,
+  checkCategories,
+  buildPreset,
+  evaluateTargetReadiness
+} = require('./studio-platforms')
 
 const vcsSystems = ['git', 'lore', 'urc']
 const repoProtocols = ['https:', 'http:', 'ssh:', 'git:', 'lore:', 'lores:', 'urc:', 'urcs:', 'uefn:', 'com.epicgames.launcher:']
@@ -250,10 +258,121 @@ module.exports = ({ text, find, id, build, safeUri, phases, stages, tracks, tool
       if (!['test', 'playtest'].includes(input.kind) || !['passed', 'failed', 'pending'].includes(input.result)) throw new Error('Invalid validation')
       state.validations.push({ id: id(), name: text(input.name), kind: input.kind, result: input.result, notes: input.notes ? text(input.notes, 20000) : '', releaseId: reference(state.releases, input.releaseId), artifactVersionId: reference(state.artifactVersions, input.artifactVersionId), taskId: reference(state.tasks, input.taskId), actor, at: new Date().toISOString() })
     },
+    platformTarget (state, input) {
+      const existing = input.id ? find(state.platformTargets, input.id) : null
+      const sf = input.storefront || (existing && existing.storefront)
+      if (!storefronts.includes(sf)) throw new Error('Invalid storefront platform')
+      const subStatus = input.submissionStatus || (existing ? existing.submissionStatus : 'preparing')
+      if (!submissionStatuses.includes(subStatus)) throw new Error('Invalid submission status')
+      const preset = !existing ? buildPreset(sf, id, input.locale || 'pt') : null
+      const values = {
+        storefront: sf,
+        name: input.name ? text(input.name, 200) : (existing ? existing.name : preset.defaultName),
+        releaseId: input.releaseId !== undefined ? reference(state.releases, input.releaseId) : (existing ? existing.releaseId || null : null),
+        storeUrl: input.storeUrl ? uri(input.storeUrl) : (input.storeUrl === '' ? '' : (existing ? existing.storeUrl || '' : '')),
+        appIdentifier: input.appIdentifier ? text(input.appIdentifier, 200) : (input.appIdentifier === '' ? '' : (existing ? existing.appIdentifier || '' : '')),
+        submissionStatus: subStatus,
+        targetDate: input.targetDate !== undefined ? date(input.targetDate) : (existing ? existing.targetDate || null : null),
+        notes: input.notes ? text(input.notes, 10000) : (input.notes === '' ? '' : (existing ? existing.notes || '' : '')),
+        archived: input.archived === true
+      }
+      if (existing) {
+        Object.assign(existing, values)
+      } else {
+        const usePreset = input.applyPreset !== false
+        state.platformTargets.push({
+          id: id(),
+          ...values,
+          checklist: usePreset ? preset.checklist : [],
+          assets: usePreset ? preset.assets : [],
+          createdAt: new Date().toISOString()
+        })
+      }
+    },
+    platformCheckItem (state, input, actor) {
+      const target = find(state.platformTargets, input.targetId)
+      const existing = input.id ? find(target.checklist, input.id) : null
+      const category = input.category || (existing && existing.category)
+      if (!checkCategories.includes(category)) throw new Error('Invalid checklist category')
+      const status = input.status || (existing ? existing.status : 'pending')
+      if (!itemStatuses.includes(status)) throw new Error('Invalid checklist status')
+      const required = input.required !== undefined ? input.required !== false : (existing ? existing.required !== false : true)
+      const waiverReason = input.waiverReason ? text(input.waiverReason, 2000) : (input.waiverReason === '' ? '' : (existing ? existing.waiverReason || '' : ''))
+      if (status === 'na' && required && !waiverReason) {
+        throw new Error('Specify waiver justification for N/A item')
+      }
+      const resolved = status === 'done' || status === 'na'
+      const values = {
+        category,
+        title: input.title ? text(input.title, 300) : (existing ? existing.title : text(input.title, 300)),
+        spec: input.spec ? text(input.spec, 2000) : (input.spec === '' ? '' : (existing ? existing.spec || '' : '')),
+        required,
+        status,
+        waiverReason: status === 'na' ? waiverReason : '',
+        assigneeId: input.assigneeId !== undefined ? reference(state.participants, input.assigneeId) : (existing ? existing.assigneeId || null : null),
+        documentId: input.documentId !== undefined ? reference(state.documents, input.documentId) : (existing ? existing.documentId || null : null),
+        taskId: input.taskId !== undefined ? reference(state.tasks, input.taskId) : (existing ? existing.taskId || null : null),
+        notes: input.notes ? text(input.notes, 4000) : (input.notes === '' ? '' : (existing ? existing.notes || '' : '')),
+        verifiedBy: resolved ? actor : null,
+        verifiedAt: resolved ? new Date().toISOString() : null
+      }
+      save(target.checklist, input, values)
+    },
+    platformAssetSlot (state, input, actor) {
+      const target = find(state.platformTargets, input.targetId)
+      const existing = input.id ? find(target.assets, input.id) : null
+      const status = input.status || (existing ? existing.status : 'pending')
+      if (!itemStatuses.includes(status)) throw new Error('Invalid storefront asset status')
+      const required = input.required !== undefined ? input.required !== false : (existing ? existing.required !== false : true)
+      const waiverReason = input.waiverReason ? text(input.waiverReason, 2000) : (input.waiverReason === '' ? '' : (existing ? existing.waiverReason || '' : ''))
+      if (status === 'na' && required && !waiverReason) {
+        throw new Error('Specify waiver justification for N/A storefront asset')
+      }
+      const artifactVersionId = input.artifactVersionId !== undefined ?
+        reference(state.artifactVersions, input.artifactVersionId) :
+        (existing ? existing.artifactVersionId || null : null)
+      const resolvedUri = input.uri ?
+        uri(input.uri) :
+        (input.uri === '' ? null : (existing ? existing.uri || null : null))
+      const resolvedToolUri = input.toolUri ?
+        uri(input.toolUri) :
+        (input.toolUri === '' ? null : (existing ? existing.toolUri || null : null))
+      if (status === 'done' && !artifactVersionId && !resolvedUri) {
+        throw new Error('Attach an artifact version or file URI before marking storefront asset done')
+      }
+      let checksum = existing ? existing.checksum || null : null
+      if (input.checksum !== undefined) {
+        if (input.checksum === '' || input.checksum === null) checksum = null
+        else if (!/^[a-f0-9]{64}$/i.test(input.checksum)) throw new Error('Expected SHA-256 checksum')
+        else checksum = input.checksum.toLowerCase()
+      }
+      const resolved = status === 'done' || status === 'na'
+      const values = {
+        name: input.name ? text(input.name, 200) : (existing ? existing.name : text(input.name, 200)),
+        dimensions: input.dimensions ? text(input.dimensions, 120) : (input.dimensions === '' ? '' : (existing ? existing.dimensions || '' : '')),
+        format: input.format ? text(input.format, 120) : (input.format === '' ? '' : (existing ? existing.format || '' : '')),
+        spec: input.spec ? text(input.spec, 2000) : (input.spec === '' ? '' : (existing ? existing.spec || '' : '')),
+        required,
+        status,
+        waiverReason: status === 'na' ? waiverReason : '',
+        artifactVersionId,
+        uri: resolvedUri,
+        checksum,
+        toolUri: resolvedToolUri,
+        locale: input.locale ? text(input.locale, 20) : (existing ? existing.locale || 'all' : 'all'),
+        notes: input.notes ? text(input.notes, 4000) : (input.notes === '' ? '' : (existing ? existing.notes || '' : '')),
+        verifiedBy: resolved ? actor : null,
+        verifiedAt: resolved ? new Date().toISOString() : null
+      }
+      save(target.assets, input, values)
+    },
     release (state, input) {
       const existing = input.id ? find(state.releases, input.id) : null
       if (existing && existing.publishedAt) throw new Error('Published release is immutable')
-      save(state.releases, input, { name: text(input.name), criteria: input.criteria ? text(input.criteria, 10000) : '', artifactVersionIds: references(state.artifactVersions, input.artifactVersionIds), validationIds: references(state.validations, input.validationIds), publishedAt: null })
+      const platformTargetIds = input.platformTargetIds !== undefined ?
+        references(state.platformTargets, input.platformTargetIds) :
+        (existing ? existing.platformTargetIds || [] : [])
+      save(state.releases, input, { name: text(input.name), criteria: input.criteria ? text(input.criteria, 10000) : '', artifactVersionIds: references(state.artifactVersions, input.artifactVersionIds), validationIds: references(state.validations, input.validationIds), platformTargetIds, publishedAt: null })
     },
     publishRelease (state, input, actor) {
       const release = find(state.releases, input.id)
@@ -271,9 +390,21 @@ module.exports = ({ text, find, id, build, safeUri, phases, stages, tracks, tool
       for (const versionId of release.artifactVersionIds || []) {
         if (!approved(state, versionId)) throw new Error('Artifact version requires approval')
       }
+      const explicitIds = new Set(release.platformTargetIds || [])
+      const linkedTargets = state.platformTargets.filter(target => !target.archived && (target.releaseId === release.id || explicitIds.has(target.id)))
+      for (const target of linkedTargets) {
+        const evalResult = evaluateTargetReadiness(target)
+        if (evalResult.missingChecks.length) {
+          throw new Error('Platform compliance checklist incomplete: ' + target.name + ' (' + evalResult.missingChecks[0].title + ')')
+        }
+        if (evalResult.missingAssets.length) {
+          throw new Error('Storefront assets incomplete: ' + target.name + ' (' + evalResult.missingAssets[0].name + ')')
+        }
+      }
       release.publishedAt = new Date().toISOString()
       release.publishedBy = actor
       release.buildIds = builds.map(build => build.id)
+      release.platformTargetIds = linkedTargets.map(target => target.id)
       release.reviewIds = (release.artifactVersionIds || []).map(versionId => state.artifactReviews.filter(review => review.versionId === versionId).slice(-1)[0].id)
     },
     task (state, input) {
