@@ -11,7 +11,54 @@ const {
 const vcsSystems = ['git', 'lore', 'urc']
 const repoProtocols = ['https:', 'http:', 'ssh:', 'git:', 'lore:', 'lores:', 'urc:', 'urcs:', 'uefn:', 'com.epicgames.launcher:']
 
-module.exports = ({ text, find, id, build, safeUri, phases, stages, tracks, tools }) => {
+module.exports = ({
+  text,
+  find,
+  id,
+  build,
+  safeUri,
+  phases,
+  engines = ['aetherion', 'godot', 'carnifex', 'uefn', 'unity', 'custom', 'tabletop'],
+  stages,
+  tracks,
+  tools,
+  loreProjectSlug,
+  loreRepoPath,
+  parseLoreFullName,
+  loreVisibilities,
+  loreEmployeeRoles,
+  loreDefaults
+}) => {
+  function endpointUrl (value, allowedProtocols, label) {
+    const raw = text(value, 1000)
+    const parsed = new URL(raw)
+    if (!allowedProtocols.includes(parsed.protocol)) throw new Error(`Unsupported ${label} protocol`)
+    if (parsed.username || parsed.password) throw new Error(`${label} must not contain credentials`)
+    if (parsed.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname)) {
+      throw new Error(`${label} requires HTTPS outside loopback`)
+    }
+    return parsed.href.replace(/\/+$/, '')
+  }
+  function extractOptionalLoreFields (system, cleanedRemote, input = {}) {
+    if (system !== 'lore') return { loreProject: '', loreRepo: '', loreFullName: '' }
+    if (input.loreProject && input.loreRepo) {
+      const p = loreProjectSlug(input.loreProject)
+      const r = loreRepoPath(input.loreRepo)
+      return { loreProject: p, loreRepo: r, loreFullName: `${p}/${r}` }
+    }
+    if (cleanedRemote) {
+      try {
+        const rawPath = new URL(cleanedRemote).pathname.replace(/^\/+|\/+$/g, '')
+        if (rawPath.includes('/')) {
+          const parsed = parseLoreFullName(rawPath)
+          return { loreProject: parsed.project, loreRepo: parsed.repo, loreFullName: parsed.fullName }
+        }
+      } catch (err) {
+        // Leave single-segment legacy vcsStatus remotes untouched
+      }
+    }
+    return { loreProject: '', loreRepo: '', loreFullName: '' }
+  }
   function reference (rows, value) { return value ? find(rows, value).id : null }
   function references (rows, values = []) {
     if (!Array.isArray(values)) throw new Error('Expected references')
@@ -88,6 +135,10 @@ module.exports = ({ text, find, id, build, safeUri, phases, stages, tracks, tool
       state.kind = input.kind
       state.archived = input.archived === true
       if (input.phase) state.phase = phase(input.phase)
+      if (input.engine) {
+        if (!engines.includes(input.engine)) throw new Error('Invalid project engine')
+        state.engine = input.engine
+      }
     },
     team (state, input) {
       save(state.teams, input, { name: text(input.name, 120), archived: input.archived === true })
@@ -109,17 +160,88 @@ module.exports = ({ text, find, id, build, safeUri, phases, stages, tracks, tool
       if (!Number.isFinite(capacity) || capacity < 0) throw new Error('Invalid capacity')
       save(state.cycles, input, { name: text(input.name), goal: input.goal ? text(input.goal, 10000) : '', startDate, endDate, capacity })
     },
+    loreConfig (state, input) {
+      const projectSlug = input.projectSlug !== undefined ? loreProjectSlug(input.projectSlug) : state.lore.projectSlug
+      const visibility = input.visibility !== undefined ? input.visibility : state.lore.visibility
+      if (!loreVisibilities.includes(visibility)) throw new Error('Invalid Lore project visibility')
+      if (state.lore.visibility === 'restricted' && visibility === 'internal' && input.confirmUnrestrict !== true) {
+        throw new Error('Confirm before relaxing restricted project visibility')
+      }
+      let employeeRole = input.employeeRole !== undefined ? input.employeeRole : state.lore.employeeRole
+      if (!loreEmployeeRoles.includes(employeeRole)) throw new Error('Invalid baseline employee role')
+      if (visibility === 'restricted') {
+        if (input.employeeRole && input.employeeRole !== 'none') {
+          throw new Error('Restricted projects cannot grant baseline employee access')
+        }
+        employeeRole = 'none'
+      }
+      const remoteBase = input.remoteBase ?
+        endpointUrl(input.remoteBase, ['lores:', 'lore:'], 'Lore remote base') :
+        (state.lore.remoteBase || loreDefaults.remoteBase)
+      const bridgeUrl = input.bridgeUrl ?
+        endpointUrl(input.bridgeUrl, ['https:', 'http:'], 'Lore OIDC bridge URL') :
+        (state.lore.bridgeUrl || loreDefaults.bridgeUrl)
+      const authUrl = input.authUrl ?
+        endpointUrl(input.authUrl, ['https:', 'http:'], 'Authentik URL') :
+        (state.lore.authUrl || loreDefaults.authUrl)
+      state.lore = {
+        projectSlug,
+        visibility,
+        employeeRole,
+        remoteBase,
+        bridgeUrl,
+        authUrl
+      }
+    },
     repository (state, input) {
       const existing = input.id ? find(state.repositories, input.id) : null
       if (!vcsSystems.includes(input.system)) throw new Error('Invalid VCS system')
-      const repoSlug = slug(input.slug || input.name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, ''))
+      const fallbackSlugSource = input.slug || (
+        input.system === 'lore' && input.loreRepo ?
+          `${state.lore.projectSlug}-${String(input.loreRepo).replace(/\//g, '-')}` :
+          input.name
+      )
+      const repoSlug = slug(String(fallbackSlugSource || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[^a-z0-9]+|[-._]+$/g, ''))
       const duplicate = state.repositories.find(row => row.slug === repoSlug && (!existing || row.id !== existing.id))
       if (duplicate) throw new Error('Repository slug already exists')
+      let cleanedRemote = remoteUri(input.remoteUri)
+      let loreProject = ''
+      let loreRepo = ''
+      let loreFullName = ''
+      if (input.system === 'lore') {
+        const base = (state.lore && state.lore.remoteBase ? state.lore.remoteBase : loreDefaults.remoteBase).replace(/\/+$/, '')
+        if (input.loreRepo) {
+          loreProject = input.loreProject ? loreProjectSlug(input.loreProject) : state.lore.projectSlug
+          loreRepo = loreRepoPath(input.loreRepo)
+          loreFullName = `${loreProject}/${loreRepo}`
+          if (!cleanedRemote) {
+            cleanedRemote = remoteUri(`${base}/${loreFullName}`)
+          } else {
+            const parsedRemote = parseLoreFullName(new URL(cleanedRemote).pathname)
+            if (parsedRemote.fullName !== loreFullName) {
+              throw new Error('Lore remote URI path does not match <project>/<repo>')
+            }
+          }
+        } else if (cleanedRemote) {
+          const parsedRemote = parseLoreFullName(new URL(cleanedRemote).pathname)
+          loreProject = parsedRemote.project
+          loreRepo = parsedRemote.repo
+          loreFullName = parsedRemote.fullName
+        } else {
+          loreProject = state.lore.projectSlug
+          loreRepo = loreRepoPath(repoSlug)
+          loreFullName = `${loreProject}/${loreRepo}`
+          cleanedRemote = remoteUri(`${base}/${loreFullName}`)
+        }
+      }
       const values = {
         name: text(input.name, 200),
         slug: repoSlug,
         system: input.system,
-        remoteUri: remoteUri(input.remoteUri),
+        remoteUri: cleanedRemote,
+        loreProject,
+        loreRepo,
+        loreFullName,
         defaultBranch: input.defaultBranch ? text(input.defaultBranch, 200) : 'main',
         workspacePath: repoPath(input.workspacePath),
         status: existing ? existing.status || null : null
@@ -135,12 +257,17 @@ module.exports = ({ text, find, id, build, safeUri, phases, stages, tracks, tool
         repo = state.repositories.find(row => row.slug === repoSlug)
         if (!repo) {
           const sys = vcsSystems.includes(input.system) ? input.system : 'git'
+          const initialRemote = remoteUri(input.remoteUri)
+          const loreMeta = extractOptionalLoreFields(sys, initialRemote, input)
           repo = {
             id: id(),
             name: input.name ? text(input.name, 200) : repoSlug,
             slug: repoSlug,
             system: sys,
-            remoteUri: remoteUri(input.remoteUri),
+            remoteUri: initialRemote,
+            loreProject: loreMeta.loreProject,
+            loreRepo: loreMeta.loreRepo,
+            loreFullName: loreMeta.loreFullName,
             defaultBranch: input.defaultBranch ? text(input.defaultBranch, 200) : (input.branch ? text(input.branch, 200) : 'main'),
             workspacePath: repoPath(input.workspacePath),
             status: null
@@ -151,6 +278,14 @@ module.exports = ({ text, find, id, build, safeUri, phases, stages, tracks, tool
         throw new Error('Specify repositoryId or slug')
       }
       if (input.remoteUri) repo.remoteUri = remoteUri(input.remoteUri)
+      if (repo.system === 'lore') {
+        const loreMeta = extractOptionalLoreFields('lore', repo.remoteUri, input)
+        if (loreMeta.loreFullName) {
+          repo.loreProject = loreMeta.loreProject
+          repo.loreRepo = loreMeta.loreRepo
+          repo.loreFullName = loreMeta.loreFullName
+        }
+      }
       const modifiedFiles = Array.isArray(input.modifiedFiles) ?
         input.modifiedFiles.slice(0, 100).map(repoPath).filter(Boolean) :
         []

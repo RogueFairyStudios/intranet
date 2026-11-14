@@ -1,0 +1,32 @@
+version: '3'
+
+tasks:
+  build:
+    cmds:
+      - go build -trimpath -o bin/studio-server ./cmd/studio-server
+
+  run:
+    cmds:
+      - go run ./cmd/studio-server
+
+  fmt:
+    cmds:
+      - gofmt -w .
+
+  vet:
+    cmds:
+      - go vet ./...
+
+  test:
+    cmds:
+      - go test -count=1 ./...
+
+  test:race:
+    cmds:
+      - go test -race -count=1 ./...
+
+  check:
+    cmds:
+      - task: fmt
+      - task: vet
+      - task: test

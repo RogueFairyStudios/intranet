@@ -15,6 +15,7 @@ SUPPORTED_SCHEMES = (
     'goethe',
     'geppetto',
     'godot',
+    'aetherion',
     'carnifex',
     'lore',
     'uefn',
@@ -23,6 +24,7 @@ SUPPORTED_SCHEMES = (
 )
 
 DEFAULT_BINS = {
+    'aetherion': 'aetherion',
     'goethe': 'goethe_imgui_demo',
     'geppetto': 'krita',
     'godot': 'godot',
@@ -181,21 +183,22 @@ def build_launch_plan(raw_uri, config):
         argv.extend(['--', str(target)])
         return {'scheme': scheme, 'kind': 'process', 'argv': argv, 'cwd': str(target.parent)}
 
-    if scheme == 'godot':
+    if scheme in ('godot', 'aetherion'):
+        bin_cmd = bins.get(scheme) or bins['godot']
         project = params.get('project') or params.get('repo', '')
         proj_dir = resolve_in_workspace(ws_root, project)
         if proj_dir.is_file() and proj_dir.name == 'project.godot':
             proj_dir = proj_dir.parent
         scene = params.get('scene') or params.get('path', '')
         if params.get('debug') == '1':
-            argv = [bins['godot'], '--path', str(proj_dir)]
+            argv = [bin_cmd, '--path', str(proj_dir)]
             if scene:
                 argv.extend(['--scene', safe_godot_ref(scene)])
             argv.append('-d')
             if params.get('breakpoint'):
                 argv.extend(['-b', safe_godot_ref(params['breakpoint'])])
         else:
-            argv = [bins['godot'], '--path', str(proj_dir), '-e']
+            argv = [bin_cmd, '--path', str(proj_dir), '-e']
             if scene:
                 argv.append(safe_godot_ref(scene))
         return {'scheme': scheme, 'kind': 'process', 'argv': argv, 'cwd': str(proj_dir)}

@@ -2,10 +2,28 @@ const crypto = require('crypto')
 
 const states = ['backlog', 'ready', 'active', 'review', 'done']
 const phases = ['pre_production', 'production', 'post_production', 'live']
+const engines = ['aetherion', 'godot', 'carnifex', 'uefn', 'unity', 'custom', 'tabletop']
 const stages = ['concept', 'blockout', 'authoring', 'surface_loc', 'engine_integration', 'polish']
 const tracks = ['general', 'art_2d', 'art_3d', 'narrative', 'spirit', 'scene_level', 'audio_vfx', 'code_system', 'typography', 'tabletop_print']
-const tools = ['generic', 'goethe', 'geppetto', 'godot', 'carnifex', 'animafaber', 'fontpit', 'lore', 'urc', 'uefn', 'unity', 'git', 'github']
-const uriProtocols = ['https:', 'http:', 'file:', 'goethe:', 'geppetto:', 'lore:', 'lores:', 'godot:', 'res:', 'uid:', 'carnifex:', 'animafaber:', 'fontpit:', 'uefn:', 'com.epicgames.launcher:']
+const tools = ['generic', 'goethe', 'geppetto', 'aetherion', 'godot', 'carnifex', 'animafaber', 'fontpit', 'lore', 'urc', 'uefn', 'unity', 'git', 'github']
+const configTools = ['authentik', 'aetherion', 'geppetto', 'lore', 'goethe', 'carnifex', 'animafaber', 'fontpit', 'uri-handler', 'all']
+const uriProtocols = ['https:', 'http:', 'file:', 'goethe:', 'geppetto:', 'lore:', 'lores:', 'aetherion:', 'godot:', 'res:', 'uid:', 'carnifex:', 'animafaber:', 'fontpit:', 'uefn:', 'com.epicgames.launcher:']
+const loreActions = ['read', 'write', 'owner', 'admin', 'migrate', 'push-protected', 'obliterate', 'presign']
+const loreVisibilities = ['internal', 'restricted']
+const loreEmployeeRoles = ['none', 'reader', 'editor']
+const authentikGroups = {
+  cLevel: 'Rogue Fairy Studios - C-Level',
+  admins: 'authentik Admins',
+  employees: 'Rogue Fairy Studios',
+  partners: 'Rogue Fairy Studios - Partners',
+  loreCi: 'Rogue Fairy Studios - Lore CI',
+  projectsRoot: 'Rogue Fairy Studios - Lore Projects'
+}
+const loreDefaults = {
+  remoteBase: 'lores://lore.roguefairy.net',
+  bridgeUrl: 'https://lore-auth.roguefairy.net',
+  authUrl: 'https://auth.telluriancorp.info'
+}
 
 const id = () => crypto.randomUUID()
 const digest = manifest => crypto.createHash('sha256').update(JSON.stringify(manifest)).digest('hex')
@@ -40,15 +58,79 @@ function find (records, recordId) {
   return record
 }
 
-function createState (name, kind, ownerId) {
+function isValidLoreProjectSlug (value) {
+  return typeof value === 'string' && value.length >= 1 && value.length <= 64 && /^[a-z0-9][a-z0-9._-]*$/.test(value)
+}
+
+function deriveLoreProjectSlug (name) {
+  const clean = String(name || 'project')
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[^a-z0-9]+|[-._]+$/g, '')
+    .slice(0, 64)
+  return isValidLoreProjectSlug(clean) ? clean : 'project'
+}
+
+function loreProjectSlug (value) {
+  const clean = text(value, 64).toLowerCase()
+  if (!isValidLoreProjectSlug(clean)) throw new Error('Invalid Lore project slug')
+  return clean
+}
+
+function loreRepoPath (value) {
+  const clean = text(value, 900).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  if (!clean) throw new Error('Invalid Lore repository name')
+  for (const segment of clean.split('/')) {
+    if (!segment || segment[0] === '.' || !/^[A-Za-z0-9._-]+$/.test(segment)) {
+      throw new Error('Invalid Lore repository name')
+    }
+  }
+  return clean
+}
+
+function parseLoreFullName (value) {
+  const clean = text(value, 1000).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  const slash = clean.indexOf('/')
+  if (slash <= 0 || slash === clean.length - 1) {
+    throw new Error('Lore repository URI must use <project>/<repo> namespace')
+  }
+  const project = loreProjectSlug(clean.slice(0, slash))
+  const repo = loreRepoPath(clean.slice(slash + 1))
+  return { project, repo, fullName: `${project}/${repo}` }
+}
+
+function normalizeLoreActions (rawActions, fallbackRole = null) {
+  if (rawActions === undefined || rawActions === null) {
+    if (fallbackRole === 'manager') return ['read', 'write', 'admin', 'presign']
+    if (fallbackRole === 'editor') return ['read', 'write']
+    if (fallbackRole === 'reader') return ['read']
+    return []
+  }
+  if (!Array.isArray(rawActions)) throw new Error('Invalid Lore actions')
+  for (const action of rawActions) {
+    if (!loreActions.includes(action)) throw new Error('Invalid Lore action')
+  }
+  return loreActions.filter(action => rawActions.includes(action))
+}
+
+function defaultEngineForKind (kind) {
+  return kind === 'analogue' ? 'tabletop' : 'aetherion'
+}
+
+function createState (name, kind, ownerId, engine = '') {
   if (!['digital', 'analogue', 'hybrid'].includes(kind)) throw new Error('Invalid project type')
+  const chosenEngine = engine ? String(engine).trim() : defaultEngineForKind(kind)
+  if (!engines.includes(chosenEngine)) throw new Error('Invalid project engine')
   return upgradeState({
     projectId: id(),
     name: text(name),
     kind,
+    engine: chosenEngine,
     phase: 'pre_production',
     ownerId,
     access: [],
+    groupAccess: [],
     participants: [],
     tasks: [],
     documents: [],
@@ -63,6 +145,7 @@ function createState (name, kind, ownerId) {
 
 const collections = [
   'access',
+  'groupAccess',
   'participants',
   'tasks',
   'documents',
@@ -88,6 +171,51 @@ function upgradeState (state) {
     if (!Array.isArray(state[collection])) state[collection] = []
   }
   if (!phases.includes(state.phase)) state.phase = 'pre_production'
+  if (!engines.includes(state.engine)) state.engine = defaultEngineForKind(state.kind)
+  const currentLore = state.lore && typeof state.lore === 'object' ? state.lore : {}
+  const projectSlug = isValidLoreProjectSlug(currentLore.projectSlug) ?
+    currentLore.projectSlug :
+    deriveLoreProjectSlug(state.name)
+  const visibility = currentLore.visibility === 'restricted' ? 'restricted' : 'internal'
+  const employeeRole = visibility === 'restricted' ?
+    'none' :
+    (loreEmployeeRoles.includes(currentLore.employeeRole) ? currentLore.employeeRole : 'none')
+  state.lore = {
+    projectSlug,
+    visibility,
+    employeeRole,
+    remoteBase: typeof currentLore.remoteBase === 'string' && currentLore.remoteBase ? currentLore.remoteBase : loreDefaults.remoteBase,
+    bridgeUrl: typeof currentLore.bridgeUrl === 'string' && currentLore.bridgeUrl ? currentLore.bridgeUrl : loreDefaults.bridgeUrl,
+    authUrl: typeof currentLore.authUrl === 'string' && currentLore.authUrl ? currentLore.authUrl : loreDefaults.authUrl
+  }
+  for (const entry of state.groupAccess) {
+    if (!Array.isArray(entry.loreActions)) {
+      entry.loreActions = normalizeLoreActions(undefined, entry.role)
+    } else {
+      entry.loreActions = loreActions.filter(action => entry.loreActions.includes(action))
+    }
+    entry.loreCanCreateRepo = entry.loreCanCreateRepo === true
+  }
+  for (const repo of state.repositories) {
+    if (repo.loreProject === undefined) repo.loreProject = ''
+    if (repo.loreRepo === undefined) repo.loreRepo = ''
+    if (repo.loreFullName === undefined) {
+      repo.loreFullName = repo.loreProject && repo.loreRepo ? `${repo.loreProject}/${repo.loreRepo}` : ''
+    }
+    if (repo.system === 'lore' && !repo.loreFullName && repo.remoteUri) {
+      try {
+        const parsedPath = new URL(repo.remoteUri).pathname.replace(/^\/+|\/+$/g, '')
+        if (parsedPath.includes('/')) {
+          const parsedName = parseLoreFullName(parsedPath)
+          repo.loreProject = parsedName.project
+          repo.loreRepo = parsedName.repo
+          repo.loreFullName = parsedName.fullName
+        }
+      } catch (err) {
+        // Legacy single-segment or non-URL remote strings remain unchanged on upgrade
+      }
+    }
+  }
   for (const artifact of state.artifacts) {
     if (!stages.includes(artifact.stage)) artifact.stage = 'concept'
     if (!tracks.includes(artifact.track)) artifact.track = 'general'
@@ -212,9 +340,16 @@ Object.assign(commands, require('./studio-production')({
   build: commands.build,
   safeUri,
   phases,
+  engines,
   stages,
   tracks,
-  tools
+  tools,
+  loreProjectSlug,
+  loreRepoPath,
+  parseLoreFullName,
+  loreVisibilities,
+  loreEmployeeRoles,
+  loreDefaults
 }))
 
 function applyCommand (state, command, input, actor) {
@@ -234,16 +369,91 @@ function exportCredits (snapshot, format) {
   return '# ' + escape(snapshot.manifest.title) + '\n\n' + snapshot.manifest.entries.map(entry => '- ' + escape(entry.section) + ' / ' + escape(entry.role) + ' — ' + escape(entry.name)).join('\n') + '\n'
 }
 
+function exportAuthentikAttributes (state, entry) {
+  upgradeState(state)
+  const actions = loreActions.filter(action => (entry.loreActions || []).includes(action))
+  return {
+    lore_project: state.lore.projectSlug,
+    lore_visibility: state.lore.visibility,
+    lore_actions: actions,
+    lore_can_create_repo: entry.loreCanCreateRepo === true
+  }
+}
+
+function yamlScalar (value) {
+  const str = String(value || '')
+  if (/^[A-Za-z0-9._/-]+$/.test(str) && !['true', 'false', 'null', 'yes', 'no', 'on', 'off'].includes(str.toLowerCase())) {
+    return str
+  }
+  return JSON.stringify(str)
+}
+
+function exportAuthentikBlueprint (state) {
+  upgradeState(state)
+  const lines = [
+    '# Tellurian Authentik Blueprint — Rogue Fairy Studios Lore Project Groups',
+    '# Target: ' + state.lore.authUrl,
+    'version: 1',
+    'metadata:',
+    '  name: ' + yamlScalar(`Rogue Fairy Studios - Lore - ${state.name}`),
+    'entries:',
+    '  - model: authentik_core.group',
+    '    id: group-rfs-projects-root',
+    '    identifiers:',
+    '      name: ' + yamlScalar(authentikGroups.projectsRoot)
+  ]
+  for (const entry of state.groupAccess) {
+    const groupLabel = entry.name || entry.groupName || `Rogue Fairy Studios - ${state.name} - ${entry.role}`
+    const entrySlug = deriveLoreProjectSlug(`${state.lore.projectSlug}-${groupLabel}`).replace(/\./g, '-')
+    const attrs = exportAuthentikAttributes(state, entry)
+    lines.push(
+      '  - model: authentik_core.group',
+      `    id: group-project-${entrySlug}`,
+      '    identifiers:',
+      '      name: ' + yamlScalar(groupLabel),
+      '    attrs:',
+      '      parent: !KeyOf group-rfs-projects-root',
+      '      attributes:',
+      '        lore_project: ' + yamlScalar(attrs.lore_project),
+      '        lore_visibility: ' + yamlScalar(attrs.lore_visibility)
+    )
+    if (attrs.lore_actions.length) {
+      lines.push('        lore_actions:')
+      for (const action of attrs.lore_actions) {
+        lines.push('          - ' + action)
+      }
+    } else {
+      lines.push('        lore_actions: []')
+    }
+    lines.push('        lore_can_create_repo: ' + (attrs.lore_can_create_repo ? 'true' : 'false'))
+  }
+  return lines.join('\n') + '\n'
+}
+
 module.exports = {
   createState,
   applyCommand,
   exportCredits,
+  exportAuthentikAttributes,
+  exportAuthentikBlueprint,
+  normalizeLoreActions,
+  deriveLoreProjectSlug,
+  isValidLoreProjectSlug,
+  parseLoreFullName,
   find,
   upgradeState,
+  defaultEngineForKind,
   collections,
   phases,
+  engines,
   stages,
   tracks,
   tools,
-  uriProtocols
+  configTools,
+  uriProtocols,
+  loreActions,
+  loreVisibilities,
+  loreEmployeeRoles,
+  authentikGroups,
+  loreDefaults
 }

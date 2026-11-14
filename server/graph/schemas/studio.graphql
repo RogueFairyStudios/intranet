@@ -27,7 +27,7 @@ type StudioPage {
 }
 
 extend type Mutation {
-  studioCreateProject(name: String!, kind: String!): StudioProject!
+  studioCreateProject(name: String!, kind: String!, engine: String): StudioProject!
   studioCommand(projectId: String!, revision: Int!, command: String!, input: String!): StudioProject!
 }
 

@@ -265,6 +265,95 @@
     </div>
 
     <h3>{{ t('repositories') }}</h3>
+    <article class="studio-card">
+      <div class="studio-asset-header">
+        <h4>{{ t('loreNamespaceTitle') }}</h4>
+        <span class="studio-badge checksum">{{ loreConfig.projectSlug }}/&lt;repo&gt;</span>
+        <span :class="['studio-badge', loreConfig.visibility === 'restricted' ? 'studio-lock-badge' : 'studio-clean-badge']">
+          {{ t(loreConfig.visibility) }}
+        </span>
+        <span
+          v-if="loreConfig.visibility === 'internal' && loreConfig.employeeRole !== 'none'"
+          class="studio-badge"
+        >Rogue Fairy Studios · {{ t(loreConfig.employeeRole) }}</span>
+      </div>
+      <p class="studio-muted">
+        {{ t('loreNamespaceHint') }}
+      </p>
+      <p class="studio-muted checksum">
+        {{ loreConfig.remoteBase }} · {{ loreConfig.bridgeUrl }} · {{ loreConfig.authUrl }}
+      </p>
+      <p class="checksum">
+        <strong>{{ t('loreLoginCmd') }}:</strong> lore auth login {{ loreConfig.remoteBase }}
+        <button
+          type="button"
+          class="studio-btn-inline"
+          @click="copyText('lore auth login ' + loreConfig.remoteBase, 'lore-login')"
+        >
+          {{ copiedKey === 'lore-login' ? t('copied') : t('copyCmd') }}
+        </button>
+      </p>
+      <details
+        v-if="project.canManage"
+        class="studio-settings"
+      >
+        <summary>{{ t('loreSettings') }}</summary>
+        <form
+          class="studio-inline-form"
+          @submit.prevent="saveLoreConfig"
+        >
+          <div class="studio-form-grid">
+            <label>{{ t('loreProjectSlug') }}<input
+              v-model="loreForm.projectSlug"
+              required
+              maxlength="64"
+              placeholder="ghostlore"
+            ></label>
+            <label>{{ t('loreVisibility') }}<select
+              v-model="loreForm.visibility"
+              @change="onLoreVisibilityChange"
+            ><option value="internal">{{ t('internal') }}</option><option value="restricted">{{ t('restricted') }}</option></select></label>
+            <label>{{ t('loreEmployeeRole') }}<select
+              v-model="loreForm.employeeRole"
+              :disabled="loreForm.visibility === 'restricted'"
+            ><option value="none">{{ t('none') }}</option><option value="reader">{{ t('reader') }}</option><option value="editor">{{ t('editor') }}</option></select></label>
+            <label>{{ t('loreRemoteBase') }}<input
+              v-model="loreForm.remoteBase"
+              required
+              maxlength="500"
+              placeholder="lores://lore.roguefairy.net"
+            ></label>
+            <label>{{ t('loreBridgeUrl') }}<input
+              v-model="loreForm.bridgeUrl"
+              required
+              maxlength="500"
+              placeholder="https://lore-auth.roguefairy.net"
+            ></label>
+            <label>{{ t('loreAuthUrl') }}<input
+              v-model="loreForm.authUrl"
+              required
+              maxlength="500"
+              placeholder="https://auth.telluriancorp.info"
+            ></label>
+          </div>
+          <label
+            v-if="loreConfig.visibility === 'restricted' && loreForm.visibility === 'internal'"
+            class="studio-check"
+          >
+            <input
+              v-model="loreForm.confirmUnrestrict"
+              type="checkbox"
+              required
+            >
+            <span>{{ t('confirmUnrestrict') }}</span>
+          </label>
+          <button :disabled="busy">
+            {{ t('save') }}
+          </button>
+        </form>
+      </details>
+    </article>
+
     <details
       v-if="project.canEdit"
       :open="!!repoForm.id"
@@ -281,12 +370,21 @@
             required
             maxlength="200"
           ></label>
+          <label>{{ t('vcsSystem') }}<select
+            v-model="repoForm.system"
+            @change="onRepoSystemChange"
+          ><option value="git">{{ t('git') }}</option><option value="lore">{{ t('lore') }}</option><option value="urc">{{ t('urc') }}</option></select></label>
+          <label v-if="repoForm.system === 'lore'">{{ t('loreRepoName') }}<input
+            v-model="repoForm.loreRepo"
+            maxlength="200"
+            placeholder="client"
+            @input="syncLoreRemote"
+          ></label>
           <label>{{ t('repositorySlug') }}<input
             v-model="repoForm.slug"
             maxlength="120"
-            placeholder="ghostlore-assets"
+            placeholder="ghostlore-client"
           ></label>
-          <label>{{ t('vcsSystem') }}<select v-model="repoForm.system"><option value="git">{{ t('git') }}</option><option value="lore">{{ t('lore') }}</option><option value="urc">{{ t('urc') }}</option></select></label>
           <label>{{ t('defaultBranch') }}<input
             v-model="repoForm.defaultBranch"
             maxlength="200"
@@ -295,7 +393,7 @@
           <label>{{ t('remoteUri') }}<input
             v-model="repoForm.remoteUri"
             maxlength="2000"
-            placeholder="lores://lore.roguefairy.net:41337/project or https://github.com/…"
+            :placeholder="repoRemotePlaceholder"
           ></label>
           <label>{{ t('workspacePath') }}<input
             v-model="repoForm.workspacePath"
@@ -380,6 +478,10 @@
         <div class="studio-asset-header">
           <h4>{{ repo.name }}</h4>
           <span class="studio-badge">{{ t(repo.system) }}</span>
+          <span
+            v-if="repo.loreFullName"
+            class="studio-badge checksum"
+          >{{ repo.loreFullName }}</span>
           <span class="studio-badge checksum">{{ repo.slug }}</span>
         </div>
         <div v-if="repo.remoteUri">
@@ -436,6 +538,31 @@
         >
           {{ t('noStatusYet') }}
         </p>
+        <div
+          v-if="repo.system === 'lore' && repo.remoteUri"
+          class="studio-muted checksum"
+        >
+          <p>
+            {{ t('loreCreateCmd') }}: lore repository create {{ repo.remoteUri }}
+            <button
+              type="button"
+              class="studio-btn-inline"
+              @click="copyText('lore repository create ' + repo.remoteUri, 'create-' + repo.id)"
+            >
+              {{ copiedKey === 'create-' + repo.id ? t('copied') : t('copyCmd') }}
+            </button>
+          </p>
+          <p>
+            {{ t('loreCloneCmd') }}: {{ loreCloneCommand(repo) }}
+            <button
+              type="button"
+              class="studio-btn-inline"
+              @click="copyText(loreCloneCommand(repo), 'clone-' + repo.id)"
+            >
+              {{ copiedKey === 'clone-' + repo.id ? t('copied') : t('copyCmd') }}
+            </button>
+          </p>
+        </div>
         <p class="studio-muted checksum">
           {{ t('cliSyncHint') }}: python integrations/cli/studio_client.py vcs-sync "{{ repo.workspacePath || '.' }}" --slug {{ repo.slug }}
         </p>
@@ -449,6 +576,69 @@
         </button>
       </article>
     </div>
+
+    <h3>{{ t('toolConfigsTitle') }}</h3>
+    <article class="studio-card">
+      <p class="studio-muted">
+        {{ t('toolConfigsHint') }}
+      </p>
+      <div class="studio-form-grid">
+        <label>{{ t('configScope') }}<select
+          v-model="configForm.scope"
+          @change="configPreview = ''"
+        ><option value="project">{{ t('scopeProject') }}</option><option value="studio">{{ t('scopeStudio') }}</option></select></label>
+        <label>{{ t('tool') }}<select
+          v-model="configForm.tool"
+          @change="configPreview = ''"
+        ><option
+          v-for="item in configTools"
+          :key="item"
+          :value="item"
+        >{{ item === 'all' ? t('allToolsBundle') : t(item) }}</option></select></label>
+        <label>{{ t('configFormat') }}<select
+          v-model="configForm.format"
+          @change="configPreview = ''"
+        ><option value="yaml">YAML (.yaml)</option><option value="json">JSON (.json)</option></select></label>
+      </div>
+      <p class="studio-muted checksum">
+        GET {{ configPreviewUrl }}
+      </p>
+      <div class="studio-inline-actions">
+        <button
+          type="button"
+          :disabled="configBusy"
+          @click="loadConfigPreview"
+        >
+          {{ configBusy ? t('loading') : t('previewConfig') }}
+        </button>
+        <button
+          v-if="configPreview"
+          type="button"
+          @click="copyText(configPreview, 'config-manifest')"
+        >
+          {{ copiedKey === 'config-manifest' ? t('copied') : t('copyConfig') }}
+        </button>
+        <a
+          class="studio-badge"
+          :href="configDownloadUrl('yaml')"
+        >{{ t('downloadYaml') }}</a>
+        <a
+          class="studio-badge"
+          :href="configDownloadUrl('json')"
+        >{{ t('downloadJson') }}</a>
+      </div>
+      <p
+        v-if="configError"
+        role="alert"
+        class="studio-error"
+      >
+        {{ configError }}
+      </p>
+      <pre
+        v-if="configPreview"
+        class="studio-code"
+      >{{ configPreview }}</pre>
+    </article>
   </section>
 </template>
 <script>
@@ -457,7 +647,8 @@ import UriLink from './uri-link.vue'
 const phases = ['pre_production', 'production', 'post_production', 'live']
 const stages = ['concept', 'blockout', 'authoring', 'surface_loc', 'engine_integration', 'polish']
 const tracks = ['general', 'art_2d', 'art_3d', 'narrative', 'spirit', 'scene_level', 'audio_vfx', 'code_system', 'typography', 'tabletop_print']
-const tools = ['generic', 'goethe', 'geppetto', 'godot', 'carnifex', 'animafaber', 'fontpit', 'lore', 'urc', 'uefn', 'unity', 'git', 'github']
+const tools = ['generic', 'aetherion', 'goethe', 'geppetto', 'godot', 'carnifex', 'animafaber', 'fontpit', 'lore', 'urc', 'uefn', 'unity', 'git', 'github']
+const configTools = ['aetherion', 'geppetto', 'authentik', 'lore', 'goethe', 'carnifex', 'animafaber', 'fontpit', 'uri-handler', 'all']
 
 function emptyArtifact () {
   return {
@@ -481,6 +672,7 @@ function emptyRepo () {
     name: '',
     slug: '',
     system: 'git',
+    loreRepo: '',
     remoteUri: '',
     defaultBranch: 'main',
     workspacePath: ''
@@ -501,11 +693,30 @@ export default {
       stages,
       tracks,
       tools,
+      configTools,
+      copiedKey: '',
       artifactFilter: '',
       trackFilter: '',
       toolFilter: '',
+      configBusy: false,
+      configError: '',
+      configPreview: '',
+      configForm: {
+        scope: 'project',
+        tool: 'aetherion',
+        format: 'yaml'
+      },
       artifactForm: emptyArtifact(),
       repoForm: emptyRepo(),
+      loreForm: {
+        projectSlug: '',
+        visibility: 'internal',
+        employeeRole: 'none',
+        remoteBase: 'lores://lore.roguefairy.net',
+        bridgeUrl: 'https://lore-auth.roguefairy.net',
+        authUrl: 'https://auth.telluriancorp.info',
+        confirmUnrestrict: false
+      },
       statusForm: {
         repositoryId: '',
         branch: 'main',
@@ -520,8 +731,39 @@ export default {
     state () {
       return this.project.data
     },
+    loreConfig () {
+      const fallbackSlug = this.slugify(this.state.name)
+      const raw = this.state.lore || {}
+      return {
+        projectSlug: raw.projectSlug || fallbackSlug,
+        visibility: raw.visibility === 'restricted' ? 'restricted' : 'internal',
+        employeeRole: raw.employeeRole || 'none',
+        remoteBase: raw.remoteBase || 'lores://lore.roguefairy.net',
+        bridgeUrl: raw.bridgeUrl || 'https://lore-auth.roguefairy.net',
+        authUrl: raw.authUrl || 'https://auth.telluriancorp.info'
+      }
+    },
+    repoRemotePlaceholder () {
+      if (this.repoForm.system === 'lore') {
+        const sub = (this.repoForm.loreRepo || 'client').trim().replace(/^\/+|\/+$/g, '') || 'client'
+        return `${this.loreConfig.remoteBase}/${this.loreConfig.projectSlug}/${sub}`
+      }
+      return 'git@github.com:RogueFairyStudios/Project.git'
+    },
     activeStorefrontsCount () {
       return (this.state.platformTargets || []).filter(t => !t.archived).length
+    },
+    configBasePath () {
+      const tool = encodeURIComponent(this.configForm.tool || 'aetherion')
+      if (this.configForm.scope === 'studio') {
+        return `/p/studio/configs/${tool}`
+      }
+      const ref = encodeURIComponent(this.loreConfig.projectSlug || this.project.id)
+      return `/p/studio/projects/${ref}/configs/${tool}`
+    },
+    configPreviewUrl () {
+      const fmt = this.configForm.format === 'json' ? 'json' : 'yaml'
+      return `${this.configBasePath}?format=${fmt}`
     },
     filteredArtifacts () {
       const needle = this.artifactFilter.trim().toLowerCase()
@@ -535,6 +777,20 @@ export default {
     }
   },
   watch: {
+    loreConfig: {
+      immediate: true,
+      handler (cfg) {
+        this.loreForm = {
+          projectSlug: cfg.projectSlug,
+          visibility: cfg.visibility,
+          employeeRole: cfg.visibility === 'restricted' ? 'none' : cfg.employeeRole,
+          remoteBase: cfg.remoteBase,
+          bridgeUrl: cfg.bridgeUrl,
+          authUrl: cfg.authUrl,
+          confirmUnrestrict: false
+        }
+      }
+    },
     'state.repositories': {
       immediate: true,
       handler (list) {
@@ -559,9 +815,28 @@ export default {
       return this.command('project', {
         name: this.state.name,
         kind: this.state.kind,
+        engine: this.state.engine || 'aetherion',
         archived: !!this.state.archived,
         phase
       })
+    },
+    configDownloadUrl (fmt) {
+      return `${this.configBasePath}?format=${fmt}&download=1`
+    },
+    async loadConfigPreview () {
+      this.configBusy = true
+      this.configError = ''
+      try {
+        const res = await window.fetch(this.configPreviewUrl, { credentials: 'same-origin' })
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`)
+        }
+        this.configPreview = await res.text()
+      } catch (err) {
+        this.configError = err.message
+      } finally {
+        this.configBusy = false
+      }
     },
     slugify (raw) {
       return String(raw || 'project').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'project'
@@ -578,6 +853,9 @@ export default {
         built = `goethe://open?repo=${enc(repoKey)}${path ? '&path=' + enc(path) : ''}${target ? '&node=' + enc(target) : ''}`
       } else if (tool === 'geppetto') {
         built = `geppetto://open?repo=${enc(repoKey)}${path ? '&path=' + enc(path) : ''}${target ? '&layer=' + enc(target) : ''}`
+      } else if (tool === 'aetherion') {
+        const resPath = path ? (path.startsWith('res://') ? path : 'res://' + path) : ''
+        built = `aetherion://open?project=${enc(repoKey)}${resPath ? '&scene=' + enc(resPath) : ''}${target ? '&node=' + enc(target) : ''}`
       } else if (tool === 'godot') {
         const resPath = path ? (path.startsWith('res://') ? path : 'res://' + path) : ''
         built = `godot://open?project=${enc(repoKey)}${resPath ? '&scene=' + enc(resPath) : ''}${target ? '&node=' + enc(target) : ''}`
@@ -678,6 +956,7 @@ export default {
         name: repo.name,
         slug: repo.slug,
         system: repo.system,
+        loreRepo: repo.loreRepo || '',
         remoteUri: repo.remoteUri || '',
         defaultBranch: repo.defaultBranch || 'main',
         workspacePath: repo.workspacePath || ''
@@ -686,9 +965,56 @@ export default {
     resetRepoForm () {
       this.repoForm = emptyRepo()
     },
+    onLoreVisibilityChange () {
+      if (this.loreForm.visibility === 'restricted') {
+        this.loreForm.employeeRole = 'none'
+      }
+    },
+    async saveLoreConfig () {
+      const payload = {
+        projectSlug: this.loreForm.projectSlug,
+        visibility: this.loreForm.visibility,
+        employeeRole: this.loreForm.visibility === 'restricted' ? 'none' : this.loreForm.employeeRole,
+        remoteBase: this.loreForm.remoteBase,
+        bridgeUrl: this.loreForm.bridgeUrl,
+        authUrl: this.loreForm.authUrl
+      }
+      if (this.loreForm.confirmUnrestrict) payload.confirmUnrestrict = true
+      await this.command('loreConfig', payload)
+    },
+    onRepoSystemChange () {
+      if (this.repoForm.system === 'lore' && !this.repoForm.loreRepo && this.repoForm.name) {
+        this.repoForm.loreRepo = this.slugify(this.repoForm.name)
+        this.syncLoreRemote()
+      }
+    },
+    syncLoreRemote () {
+      if (this.repoForm.system !== 'lore') return
+      const sub = (this.repoForm.loreRepo || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+      if (sub) {
+        this.repoForm.remoteUri = `${this.loreConfig.remoteBase.replace(/\/+$/, '')}/${this.loreConfig.projectSlug}/${sub}`
+      }
+    },
+    loreCloneCommand (repo) {
+      return 'lore clone ' + repo.remoteUri + (repo.workspacePath ? ' "' + repo.workspacePath + '"' : '')
+    },
+    async copyText (value, key) {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(value)
+          this.copiedKey = key
+          setTimeout(() => {
+            if (this.copiedKey === key) this.copiedKey = ''
+          }, 1800)
+        }
+      } catch (err) {
+        this.copiedKey = ''
+      }
+    },
     async saveRepository () {
       const payload = { ...this.repoForm }
       if (!payload.id) delete payload.id
+      if (payload.system !== 'lore') delete payload.loreRepo
       if (await this.command('repository', payload)) {
         this.resetRepoForm()
       }

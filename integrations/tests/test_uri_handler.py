@@ -47,6 +47,14 @@ class UriHandlerTests(unittest.TestCase):
         self.assertIn('-e', godot_plan['argv'])
         self.assertIn('res://scenes/main.tscn', godot_plan['argv'])
 
+        aetherion_plan = handler.build_launch_plan(
+            'aetherion://open?project=GhostLore&scene=res://scenes/main.tscn',
+            self.cfg,
+        )
+        self.assertEqual(aetherion_plan['argv'][0], 'aetherion')
+        self.assertIn('-e', aetherion_plan['argv'])
+        self.assertIn('res://scenes/main.tscn', aetherion_plan['argv'])
+
         carnifex_plan = handler.build_launch_plan(
             'carnifex://open?game=carnifex_game&mod=id1&map=e1m1',
             self.cfg,

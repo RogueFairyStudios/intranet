@@ -31,6 +31,7 @@
 </template>
 <script>
 const handlerSchemes = [
+  'aetherion:',
   'goethe:',
   'geppetto:',
   'lore:',
@@ -44,6 +45,7 @@ const handlerSchemes = [
 ]
 
 const labels = {
+  'aetherion:': 'aetherion://',
   'goethe:': 'goethe://',
   'geppetto:': 'geppetto://',
   'lore:': 'lore://',

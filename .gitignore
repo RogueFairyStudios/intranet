@@ -50,3 +50,7 @@ test-results/
 
 # Python integration runtime files
 __pycache__/
+
+# Go studio-server local build artifacts
+studio-server/bin/
+studio-server/.env

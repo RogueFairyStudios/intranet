@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Dependency-free Studio bridge. Credentials are only read from process environment."""
+"""Dependency-free Rogue Fairy Studio CLI & cross-tool integration bridge (REST /v1 + GraphQL)."""
 import argparse
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -15,6 +16,7 @@ import urllib.request
 import uuid
 
 ALLOWED_SOURCES = (
+    'aetherion',
     'geppetto',
     'goethe',
     'godot',
@@ -45,6 +47,7 @@ PIPELINE_STAGES = (
     'engine_integration',
     'polish',
 )
+DEFAULT_AUTHENTIK_BASE = 'https://auth.telluriancorp.info'
 
 
 class StudioError(Exception):
@@ -60,15 +63,55 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise StudioError('Endpoint redirected; configure its final URL')
 
 
-def atomic_json(path, value):
+def atomic_json(path, value, private=False):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
-    with temp.open('w', encoding='utf-8') as stream:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    mode = 0o600 if private else 0o666
+    fd = os.open(str(temp), flags, mode)
+    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
         json.dump(value, stream, ensure_ascii=False, indent=2)
         stream.flush()
         os.fsync(stream.fileno())
+    if private:
+        try:
+            os.chmod(temp, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
     os.replace(temp, path)
+
+
+def atomic_text(path, text_value, private=False):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    mode = 0o600 if private else 0o666
+    fd = os.open(str(temp), flags, mode)
+    with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as stream:
+        stream.write(text_value)
+        if not text_value.endswith('\n'):
+            stream.write('\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+    if private:
+        try:
+            os.chmod(temp, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+    os.replace(temp, path)
+
+
+def validate_endpoint_url(raw_url, label='Endpoint'):
+    endpoint = urllib.parse.urlparse(raw_url)
+    if endpoint.scheme != 'https' and not (
+        endpoint.scheme == 'http' and endpoint.hostname in ('localhost', '127.0.0.1', '::1')
+    ):
+        raise StudioError(f'{label} must use HTTPS (HTTP allowed only on loopback)')
+    if endpoint.username or endpoint.password:
+        raise StudioError(f'Do not embed credentials in {label}')
+    return endpoint
 
 
 def sha256(path):
@@ -214,9 +257,28 @@ def _read_lore_config_remote(lore_dir):
     return sanitize_remote_uri(match.group(1)) if match else ''
 
 
+def _parse_lore_namespace(remote_uri):
+    if not remote_uri:
+        return '', ''
+    try:
+        raw_path = urllib.parse.urlsplit(remote_uri).path.strip('/')
+    except ValueError:
+        return '', ''
+    if '/' not in raw_path:
+        return '', ''
+    project_seg, repo_seg = raw_path.split('/', 1)
+    if not re.match(r'^[a-z0-9][a-z0-9._-]{0,63}$', project_seg):
+        return '', ''
+    segments = repo_seg.split('/')
+    if not segments or any((not seg or seg.startswith('.') or not re.match(r'^[A-Za-z0-9._-]+$', seg)) for seg in segments):
+        return '', ''
+    return project_seg, repo_seg
+
+
 def _inspect_lore(repo_dir, lore_bin='lore'):
     lore_dir = repo_dir / '.lore'
     remote_uri = _read_lore_config_remote(lore_dir)
+    lore_project, lore_repo = _parse_lore_namespace(remote_uri)
     branch = 'main'
     revision = ''
     revision_number = None
@@ -309,7 +371,7 @@ def _inspect_lore(repo_dir, lore_bin='lore'):
                         'lockedAt': str(locked_at) if locked_at else None,
                     })
 
-    return {
+    result = {
         'system': 'lore',
         'remoteUri': remote_uri,
         'branch': branch,
@@ -327,6 +389,10 @@ def _inspect_lore(repo_dir, lore_bin='lore'):
         'locks': locks,
         'compression': 'zstd',
     }
+    if lore_project and lore_repo:
+        result['loreProject'] = lore_project
+        result['loreRepo'] = lore_repo
+    return result
 
 
 def _inspect_urc(repo_dir):
@@ -398,21 +464,296 @@ def inspect_vcs(repo_dir, system='auto', slug=None, name=None, workspace_path=No
 
 
 class Client:
-    def __init__(self, url=None, project=None, outbox=None):
-        self.url = url or os.environ.get('STUDIO_URL', '')
-        self.project_id = project or os.environ.get('STUDIO_PROJECT_ID', '')
+    def __init__(self, url=None, project=None, outbox=None, api_url=None, session_path=None):
+        self.url = url if url is not None else os.environ.get('STUDIO_URL', '')
+        self.api_url = (api_url if api_url is not None else os.environ.get('STUDIO_API_URL', '')).rstrip('/')
+        self.project_id = project if project is not None else os.environ.get('STUDIO_PROJECT_ID', '')
         self.outbox = Path(outbox or os.environ.get('STUDIO_OUTBOX', str(Path.home() / '.rogue-fairy' / 'outbox')))
+        self.session_path = Path(
+            session_path or os.environ.get('STUDIO_SESSION_FILE', str(Path.home() / '.rogue-fairy' / 'studio-session.json'))
+        )
+
+    def _effective_target_key(self):
+        return self.api_url or self.url
+
+    def _load_session_bearer(self):
+        if not self.session_path.is_file():
+            return ''
+        try:
+            doc = json.loads(self.session_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return ''
+        access_token = str(doc.get('access_token') or '')
+        expires_at = float(doc.get('expires_at') or 0)
+        if access_token and (expires_at <= 0 or expires_at > time.time() + 30):
+            return f'Bearer {access_token}'
+        refresh_token = str(doc.get('refresh_token') or '')
+        token_endpoint = str(doc.get('token_endpoint') or '')
+        client_id = str(doc.get('client_id') or '')
+        if refresh_token and token_endpoint and client_id:
+            try:
+                refreshed = self._refresh_oidc_token(token_endpoint, client_id, refresh_token, doc)
+                return f"Bearer {refreshed['access_token']}"
+            except StudioError:
+                return ''
+        return ''
+
+    def _refresh_oidc_token(self, token_endpoint, client_id, refresh_token, prev_doc):
+        validate_endpoint_url(token_endpoint, 'OIDC token endpoint')
+        form = urllib.parse.urlencode({
+            'grant_type': 'refresh_token',
+            'client_id': client_id,
+            'refresh_token': refresh_token,
+        }).encode('utf-8')
+        req = urllib.request.Request(
+            token_endpoint,
+            form,
+            {'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json'},
+        )
+        try:
+            with urllib.request.build_opener(NoRedirect).open(req, timeout=20) as resp:
+                token_data = json.load(resp)
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            raise StudioError('OIDC token refresh failed') from exc
+        if not token_data.get('access_token'):
+            raise StudioError('OIDC refresh returned no access_token')
+        now = time.time()
+        updated = dict(prev_doc)
+        updated['access_token'] = token_data['access_token']
+        if token_data.get('refresh_token'):
+            updated['refresh_token'] = token_data['refresh_token']
+        updated['expires_at'] = now + int(token_data.get('expires_in') or 3600)
+        atomic_json(self.session_path, updated, private=True)
+        return updated
+
+    def oidc_device_login(self, issuer_url, client_id, scopes='openid profile email offline_access'):
+        issuer = issuer_url.rstrip('/')
+        validate_endpoint_url(issuer, 'OIDC issuer')
+        disc_url = f'{issuer}/.well-known/openid-configuration'
+        try:
+            with urllib.request.build_opener(NoRedirect).open(disc_url, timeout=15) as resp:
+                disc = json.load(resp)
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            raise StudioError('Failed to fetch Authentik OIDC discovery') from exc
+
+        device_ep = str(disc.get('device_authorization_endpoint') or '')
+        token_ep = str(disc.get('token_endpoint') or '')
+        if not device_ep or not token_ep:
+            raise StudioError('OIDC provider does not advertise device authorization endpoints')
+        validate_endpoint_url(device_ep, 'Device authorization endpoint')
+        validate_endpoint_url(token_ep, 'Token endpoint')
+
+        form = urllib.parse.urlencode({'client_id': client_id, 'scope': scopes}).encode('utf-8')
+        req = urllib.request.Request(
+            device_ep,
+            form,
+            {'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json'},
+        )
+        try:
+            with urllib.request.build_opener(NoRedirect).open(req, timeout=20) as resp:
+                dev = json.load(resp)
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            raise StudioError('Device authorization initiation failed') from exc
+
+        verify_url = dev.get('verification_uri_complete') or dev.get('verification_uri') or ''
+        user_code = dev.get('user_code') or ''
+        device_code = dev.get('device_code') or ''
+        interval = max(2, int(dev.get('interval') or 5))
+        expires_in = int(dev.get('expires_in') or 600)
+        if not device_code or not verify_url:
+            raise StudioError('Invalid device authorization response')
+
+        print(f'Authenticate in browser: {verify_url}', file=sys.stderr)
+        if user_code:
+            print(f'Verification code: {user_code}', file=sys.stderr)
+
+        deadline = time.time() + expires_in
+        while time.time() < deadline:
+            time.sleep(interval)
+            poll_form = urllib.parse.urlencode({
+                'grant_type': 'urn:ietf:params:oauth:grant-type:device_code',
+                'device_code': device_code,
+                'client_id': client_id,
+            }).encode('utf-8')
+            poll_req = urllib.request.Request(
+                token_ep,
+                poll_form,
+                {'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json'},
+            )
+            try:
+                with urllib.request.build_opener(NoRedirect).open(poll_req, timeout=20) as resp:
+                    tok = json.load(resp)
+                session_doc = {
+                    'issuer': issuer,
+                    'client_id': client_id,
+                    'token_endpoint': token_ep,
+                    'access_token': tok['access_token'],
+                    'refresh_token': tok.get('refresh_token', ''),
+                    'expires_at': time.time() + int(tok.get('expires_in') or 3600),
+                }
+                atomic_json(self.session_path, session_doc, private=True)
+                return {'authenticated': True, 'issuer': issuer, 'sessionFile': str(self.session_path)}
+            except urllib.error.HTTPError as http_err:
+                try:
+                    err_doc = json.loads(http_err.read().decode('utf-8', errors='replace'))
+                except ValueError:
+                    err_doc = {}
+                err_code = err_doc.get('error', '')
+                if err_code == 'authorization_pending':
+                    continue
+                if err_code == 'slow_down':
+                    interval += 5
+                    continue
+                raise StudioError(f'Device login rejected ({err_code or http_err.code})') from None
+        raise StudioError('Device login timed out')
+
+    def _auth_headers(self, client_app=None):
+        headers = {}
+        if os.environ.get('STUDIO_KEY'):
+            headers['X-Studio-Key'] = os.environ['STUDIO_KEY']
+        if os.environ.get('STUDIO_AUTHORIZATION'):
+            headers['Authorization'] = os.environ['STUDIO_AUTHORIZATION']
+        elif 'X-Studio-Key' not in headers:
+            session_bearer = self._load_session_bearer()
+            if session_bearer:
+                headers['Authorization'] = session_bearer
+        if os.environ.get('STUDIO_COOKIE'):
+            headers['Cookie'] = os.environ['STUDIO_COOKIE']
+        eff_client = client_app or os.environ.get('STUDIO_CLIENT_APP', '')
+        if eff_client:
+            headers['X-Studio-Client'] = eff_client
+        return headers
+
+    def rest(self, method, path_and_query, payload=None, client_app=None):
+        if not self.api_url:
+            raise StudioError('STUDIO_API_URL is required for REST /v1 queries')
+        validate_endpoint_url(self.api_url, 'STUDIO_API_URL')
+        url = self.api_url + '/' + path_and_query.lstrip('/')
+        headers = {'Accept': 'application/json'}
+        headers.update(self._auth_headers(client_app=client_app))
+        body = None
+        if payload is not None:
+            body = json.dumps(payload).encode('utf-8')
+            headers['Content-Type'] = 'application/json'
+        request = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 409:
+                raise Conflict('Project revision conflict') from None
+            raise StudioError(f'Studio API HTTP status {exc.code}') from None
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            raise StudioError('Studio API connection or response failed') from None
+
+    def whoami(self, client_app=None):
+        return self.rest('GET', '/v1/auth/me', client_app=client_app)
+
+    def my_projects(self, client_app=None, include_archived=False, include_all_kinds=False):
+        params = {}
+        if client_app:
+            params['client'] = client_app
+        if include_archived:
+            params['includeArchived'] = '1'
+        if include_all_kinds:
+            params['includeAllKinds'] = '1'
+        qs = ('?' + urllib.parse.urlencode(params)) if params else ''
+        return self.rest('GET', f'/v1/me/projects{qs}', client_app=client_app)
+
+    def user_projects(self, identifier, client_app=None, include_archived=False, include_all_kinds=False):
+        params = {}
+        if client_app:
+            params['client'] = client_app
+        if include_archived:
+            params['includeArchived'] = '1'
+        if include_all_kinds:
+            params['includeAllKinds'] = '1'
+        qs = ('?' + urllib.parse.urlencode(params)) if params else ''
+        safe_id = urllib.parse.quote(str(identifier), safe='')
+        return self.rest('GET', f'/v1/users/{safe_id}/projects{qs}', client_app=client_app)
+
+    def my_workspaces(self, client_app=None, vcs=None, track=None, tool=None, only_writable=False, only_actionable=False):
+        params = self._workspace_params(client_app, vcs, track, tool, only_writable, only_actionable)
+        qs = ('?' + urllib.parse.urlencode(params)) if params else ''
+        return self.rest('GET', f'/v1/me/workspaces{qs}', client_app=client_app)
+
+    def user_workspaces(self, identifier, client_app=None, vcs=None, track=None, tool=None, only_writable=False, only_actionable=False):
+        params = self._workspace_params(client_app, vcs, track, tool, only_writable, only_actionable)
+        qs = ('?' + urllib.parse.urlencode(params)) if params else ''
+        safe_id = urllib.parse.quote(str(identifier), safe='')
+        return self.rest('GET', f'/v1/users/{safe_id}/workspaces{qs}', client_app=client_app)
+
+    def fetch_config(self, tool=None, project=None, fmt='json', user=None, client_app=None):
+        norm_fmt = (fmt or 'json').strip().lower()
+        if norm_fmt == 'yml':
+            norm_fmt = 'yaml'
+        if norm_fmt not in ('json', 'yaml'):
+            raise StudioError('Configuration format must be json or yaml')
+
+        clean_tool = (tool or '').strip()
+        if clean_tool.lower() == 'catalog':
+            clean_tool = ''
+
+        if self.api_url:
+            validate_endpoint_url(self.api_url, 'STUDIO_API_URL')
+            base = self.api_url.rstrip('/')
+            prefix = '' if base.endswith('/p/studio') else '/v1'
+        elif self.url:
+            validate_endpoint_url(self.url, 'STUDIO_URL')
+            parsed = urllib.parse.urlsplit(self.url)
+            base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, '/p/studio', '', ''))
+            prefix = ''
+        else:
+            raise StudioError('STUDIO_API_URL or STUDIO_URL is required to fetch configurations')
+
+        if project:
+            safe_proj = urllib.parse.quote(str(project), safe='')
+            rel_path = f'{prefix}/projects/{safe_proj}/configs'
+        else:
+            rel_path = f'{prefix}/configs'
+
+        if clean_tool:
+            rel_path += '/' + urllib.parse.quote(clean_tool, safe='')
+
+        query = {'format': norm_fmt}
+        if user:
+            query['user'] = str(user)
+        full_url = f"{base}{rel_path}?{urllib.parse.urlencode(query)}"
+
+        headers = {
+            'Accept': 'application/yaml' if norm_fmt == 'yaml' else 'application/json',
+        }
+        headers.update(self._auth_headers(client_app=client_app))
+        request = urllib.request.Request(full_url, headers=headers, method='GET')
+        try:
+            with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
+                return response.read().decode('utf-8')
+        except urllib.error.HTTPError as exc:
+            raise StudioError(f'Studio config endpoint HTTP status {exc.code}') from None
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            raise StudioError('Studio config endpoint connection failed') from None
+
+    @staticmethod
+    def _workspace_params(client_app, vcs, track, tool, only_writable, only_actionable):
+        params = {}
+        if client_app:
+            params['client'] = client_app
+        if vcs:
+            params['vcs'] = vcs
+        if track:
+            params['track'] = track
+        if tool:
+            params['tool'] = tool
+        if only_writable:
+            params['onlyWritable'] = '1'
+        if only_actionable:
+            params['onlyActionable'] = '1'
+        return params
 
     def graphql(self, query, variables):
-        endpoint = urllib.parse.urlparse(self.url)
-        if endpoint.scheme != 'https' and not (endpoint.scheme == 'http' and endpoint.hostname in ('localhost', '127.0.0.1', '::1')):
-            raise StudioError('STUDIO_URL must be an HTTPS GraphQL endpoint (HTTP allowed only on loopback)')
-        if endpoint.username or endpoint.password:
-            raise StudioError('Do not embed authorization in STUDIO_URL')
+        validate_endpoint_url(self.url, 'STUDIO_URL')
         headers = {'Content-Type': 'application/json'}
-        for env, header in [('STUDIO_AUTHORIZATION', 'Authorization'), ('STUDIO_COOKIE', 'Cookie')]:
-            if os.environ.get(env):
-                headers[header] = os.environ[env]
+        headers.update(self._auth_headers())
         request = urllib.request.Request(self.url, json.dumps({'query': query, 'variables': variables}).encode(), headers)
         try:
             with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
@@ -431,32 +772,45 @@ class Client:
         return data['data']
 
     def project(self):
+        if self.api_url:
+            safe_pid = urllib.parse.quote(self.project_id, safe='')
+            data = self.rest('GET', f'/v1/projects/{safe_pid}')
+            state = data.get('project') or json.loads(data['state'])
+            return {'id': data['id'], 'revision': data['revision'], 'state': state}
         data = self.graphql('query($id:String!){studioProject(id:$id){id revision state}}', {'id': self.project_id})['studioProject']
         data['state'] = json.loads(data['state']) if isinstance(data['state'], str) else data['state']
         return data
 
     def submit(self, event):
+        if self.api_url:
+            safe_pid = urllib.parse.quote(self.project_id, safe='')
+            return self.rest('POST', f'/v1/projects/{safe_pid}/events', payload=event, client_app=event.get('source'))
         for attempt in range(3):
             project = self.project()
             try:
-                return self.graphql('mutation($projectId:String!,$revision:Int!,$command:String!,$input:String!){studioCommand(projectId:$projectId,revision:$revision,command:$command,input:$input){id revision}}', {'projectId': self.project_id, 'revision': project['revision'], 'command': 'integrationEvent', 'input': json.dumps(event)})
+                return self.graphql(
+                    'mutation($projectId:String!,$revision:Int!,$command:String!,$input:String!){studioCommand(projectId:$projectId,revision:$revision,command:$command,input:$input){id revision}}',
+                    {'projectId': self.project_id, 'revision': project['revision'], 'command': 'integrationEvent', 'input': json.dumps(event)},
+                )
             except Conflict:
                 if attempt == 2:
                     raise
 
     def queue(self, event):
-        if not self.project_id or not self.url:
-            raise StudioError('Set STUDIO_URL and STUDIO_PROJECT_ID')
+        target = self._effective_target_key()
+        if not self.project_id or not target:
+            raise StudioError('Set STUDIO_API_URL (or STUDIO_URL) and STUDIO_PROJECT_ID')
         if event.get('source') not in ALLOWED_SOURCES or event.get('type') not in ALLOWED_EVENT_TYPES or not isinstance(event.get('payload'), dict):
             raise StudioError('Invalid integration event')
         event = dict(event)
         event.setdefault('eventId', str(uuid.uuid4()))
         # Random filenames prevent an eventId from becoming a filesystem path.
         path = self.outbox / (uuid.uuid4().hex + '.json')
-        atomic_json(path, {'url': self.url, 'projectId': self.project_id, 'event': event, 'attempts': 0, 'nextAttempt': 0})
+        atomic_json(path, {'url': target, 'projectId': self.project_id, 'event': event, 'attempts': 0, 'nextAttempt': 0})
         return path
 
     def flush(self, force=False):
+        target = self._effective_target_key()
         self.outbox.mkdir(parents=True, exist_ok=True)
         lock = self.outbox / '.flush-lock'
         try:
@@ -467,7 +821,7 @@ class Client:
         try:
             for path in sorted(self.outbox.glob('*.json')):
                 record = json.loads(path.read_text(encoding='utf-8'))
-                if record['url'] != self.url or record['projectId'] != self.project_id:
+                if record['url'] != target or record['projectId'] != self.project_id:
                     continue
                 if not force and record['nextAttempt'] > time.time():
                     pending += 1
@@ -502,25 +856,27 @@ class Client:
             payload[field] = self.upload(file)['url']
 
     def upload(self, path):
-        endpoint = urllib.parse.urlparse(self.url)
-        if endpoint.scheme != 'https' and not (endpoint.scheme == 'http' and endpoint.hostname in ('localhost', '127.0.0.1', '::1')):
-            raise StudioError('Upload requires HTTPS or loopback')
-        if endpoint.username or endpoint.password:
-            raise StudioError('Invalid upload endpoint')
+        base_target = self.api_url or self.url
+        endpoint = validate_endpoint_url(base_target, 'Upload endpoint')
         path = Path(path)
         if path.stat().st_size > 50 * 1024 * 1024:
             raise StudioError('Upload exceeds 50 MiB; use a shared artifact URL')
         content = path.read_bytes()
         boundary = 'Studio' + uuid.uuid4().hex
-        # The server keeps the content hash, so a fixed safe transport filename suffices.
         safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', path.name)[:180] or 'artifact.bin'
-        body = ('--' + boundary + '\r\nContent-Disposition: form-data; name="file"; filename="' + safe_name + '"\r\nContent-Type: application/octet-stream\r\n\r\n').encode() + content + ('\r\n--' + boundary + '--\r\n').encode()
-        url = urllib.parse.urljoin(self.url, '/p/studio/files/' + urllib.parse.quote(self.project_id, safe=''))
+        body = (
+            '--' + boundary + '\r\nContent-Disposition: form-data; name="file"; filename="' + safe_name + '"\r\nContent-Type: application/octet-stream\r\n\r\n'
+        ).encode() + content + ('\r\n--' + boundary + '--\r\n').encode()
+
+        safe_pid = urllib.parse.quote(self.project_id, safe='')
+        if self.api_url:
+            upload_url = f'{self.api_url}/v1/projects/{safe_pid}/files'
+        else:
+            upload_url = urllib.parse.urljoin(self.url, '/p/studio/files/' + safe_pid)
+
         headers = {'Content-Type': 'multipart/form-data; boundary=' + boundary}
-        for env, header in [('STUDIO_AUTHORIZATION', 'Authorization'), ('STUDIO_COOKIE', 'Cookie')]:
-            if os.environ.get(env):
-                headers[header] = os.environ[env]
-        request = urllib.request.Request(url, body, headers)
+        headers.update(self._auth_headers())
+        request = urllib.request.Request(upload_url, body, headers)
         try:
             with urllib.request.build_opener(NoRedirect).open(request, timeout=60) as response:
                 result = json.load(response)
@@ -528,7 +884,8 @@ class Client:
             raise StudioError('Artifact upload failed') from None
         if result.get('checksum') != hashlib.sha256(content).hexdigest():
             raise StudioError('Uploaded checksum mismatch')
-        result['url'] = urllib.parse.urljoin(self.url, result['path'])
+        rel_path = result.get('apiPath') if self.api_url and result.get('apiPath') else result.get('path', '')
+        result['url'] = urllib.parse.urljoin(base_target + '/', rel_path.lstrip('/'))
         if urllib.parse.urlparse(result['url']).netloc != endpoint.netloc:
             raise StudioError('Invalid artifact response location')
         return result
@@ -538,7 +895,15 @@ class Client:
         snapshot = next((s for s in project['state']['credits'] if s['id'] == snapshot_id), None)
         if not snapshot or snapshot['status'] != 'approved':
             raise StudioError('Select an approved credits snapshot')
-        raw = self.graphql('query($projectId:String!,$snapshotId:String!,$format:String!){studioCredits(projectId:$projectId,snapshotId:$snapshotId,format:$format)}', {'projectId': self.project_id, 'snapshotId': snapshot_id, 'format': 'json'})['studioCredits']
+        if self.api_url:
+            safe_pid = urllib.parse.quote(self.project_id, safe='')
+            safe_sid = urllib.parse.quote(snapshot_id, safe='')
+            raw = self.rest('GET', f'/v1/projects/{safe_pid}/credits/{safe_sid}?format=json')['content']
+        else:
+            raw = self.graphql(
+                'query($projectId:String!,$snapshotId:String!,$format:String!){studioCredits(projectId:$projectId,snapshotId:$snapshotId,format:$format)}',
+                {'projectId': self.project_id, 'snapshotId': snapshot_id, 'format': 'json'},
+            )['studioCredits']
         content = raw.encode('utf-8')
         checksum = hashlib.sha256(content).hexdigest()
         if checksum != snapshot['checksum']:
@@ -552,10 +917,57 @@ class Client:
         return {'path': str(destination), 'checksum': checksum}
 
 
+def _add_workspace_flags(p):
+    p.add_argument('--client', default=None)
+    p.add_argument('--vcs', choices=('lore', 'git', 'urc'), default=None)
+    p.add_argument('--track', default=None)
+    p.add_argument('--tool', default=None)
+    p.add_argument('--only-writable', action='store_true')
+    p.add_argument('--only-actionable', action='store_true')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--outbox')
+    parser.add_argument('--api-url')
+    parser.add_argument('--project-id')
     sub = parser.add_subparsers(dest='command', required=True)
+
+    login_cmd = sub.add_parser('login')
+    login_cmd.add_argument('--app', default='geppetto')
+    login_cmd.add_argument('--issuer')
+    login_cmd.add_argument('--client-id')
+
+    whoami_cmd = sub.add_parser('whoami')
+    whoami_cmd.add_argument('--client', default=None)
+
+    my_proj_cmd = sub.add_parser('my-projects')
+    my_proj_cmd.add_argument('--client', default=None)
+    my_proj_cmd.add_argument('--include-archived', action='store_true')
+    my_proj_cmd.add_argument('--include-all-kinds', action='store_true')
+
+    user_proj_cmd = sub.add_parser('user-projects')
+    user_proj_cmd.add_argument('user')
+    user_proj_cmd.add_argument('--client', default=None)
+    user_proj_cmd.add_argument('--include-archived', action='store_true')
+    user_proj_cmd.add_argument('--include-all-kinds', action='store_true')
+
+    my_work_cmd = sub.add_parser('my-work')
+    _add_workspace_flags(my_work_cmd)
+
+    user_work_cmd = sub.add_parser('user-work')
+    user_work_cmd.add_argument('user')
+    _add_workspace_flags(user_work_cmd)
+
+    cfg_cmd = sub.add_parser('config')
+    cfg_cmd.add_argument('tool', nargs='?', default='catalog')
+    cfg_cmd.add_argument('-p', '--project', default=None)
+    cfg_cmd.add_argument('--scope', choices=('auto', 'studio', 'project'), default='auto')
+    cfg_cmd.add_argument('-f', '--format', choices=('json', 'yaml'), default=None)
+    cfg_cmd.add_argument('--user', default=None)
+    cfg_cmd.add_argument('--client', default=None)
+    cfg_cmd.add_argument('-o', '--output', default=None)
+
     sub.add_parser('tasks')
     flush = sub.add_parser('flush')
     flush.add_argument('--force', action='store_true')
@@ -595,10 +1007,87 @@ def main(argv=None):
     credits = sub.add_parser('credits')
     credits.add_argument('snapshot_id')
     credits.add_argument('destination')
+
     args = parser.parse_args(argv)
-    client = Client(outbox=args.outbox)
+    client = Client(project=args.project_id, outbox=args.outbox, api_url=args.api_url)
     try:
-        if args.command == 'tasks':
+        if args.command == 'login':
+            issuer = args.issuer or f"{DEFAULT_AUTHENTIK_BASE}/application/o/{args.app}"
+            cid = args.client_id or args.app
+            result = client.oidc_device_login(issuer, cid)
+        elif args.command == 'whoami':
+            result = client.whoami(client_app=args.client)
+        elif args.command == 'my-projects':
+            result = client.my_projects(
+                client_app=args.client,
+                include_archived=args.include_archived,
+                include_all_kinds=args.include_all_kinds,
+            )
+        elif args.command == 'user-projects':
+            result = client.user_projects(
+                args.user,
+                client_app=args.client,
+                include_archived=args.include_archived,
+                include_all_kinds=args.include_all_kinds,
+            )
+        elif args.command == 'my-work':
+            result = client.my_workspaces(
+                client_app=args.client,
+                vcs=args.vcs,
+                track=args.track,
+                tool=args.tool,
+                only_writable=args.only_writable,
+                only_actionable=args.only_actionable,
+            )
+        elif args.command == 'user-work':
+            result = client.user_workspaces(
+                args.user,
+                client_app=args.client,
+                vcs=args.vcs,
+                track=args.track,
+                tool=args.tool,
+                only_writable=args.only_writable,
+                only_actionable=args.only_actionable,
+            )
+        elif args.command == 'config':
+            fmt = args.format
+            if not fmt:
+                lower_out = (args.output or '').lower()
+                lower_tool = (args.tool or '').lower()
+                if lower_out.endswith(('.yaml', '.yml')) or lower_tool.endswith(('.yaml', '.yml')):
+                    fmt = 'yaml'
+                else:
+                    fmt = 'json'
+
+            if args.scope == 'studio':
+                target_project = None
+            elif args.scope == 'project':
+                target_project = args.project or client.project_id
+                if not target_project:
+                    raise StudioError('Specify --project <slug-or-id> (or STUDIO_PROJECT_ID) when --scope=project')
+            else:
+                target_project = args.project or (args.project_id if args.project_id else None)
+
+            raw_manifest = client.fetch_config(
+                tool=args.tool,
+                project=target_project,
+                fmt=fmt,
+                user=args.user,
+                client_app=args.client,
+            )
+            if args.output:
+                atomic_text(args.output, raw_manifest)
+                result = {
+                    'saved': str(Path(args.output)),
+                    'scope': 'project' if target_project else 'studio',
+                    'project': target_project,
+                    'tool': args.tool,
+                    'format': fmt,
+                }
+            else:
+                sys.stdout.write(raw_manifest if raw_manifest.endswith('\n') else raw_manifest + '\n')
+                return 0
+        elif args.command == 'tasks':
             result = client.project()['state']['tasks']
         elif args.command == 'credits':
             result = client.credits(args.snapshot_id, args.destination)

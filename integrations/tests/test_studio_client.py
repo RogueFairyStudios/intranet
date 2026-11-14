@@ -144,6 +144,20 @@ class BridgeTests(unittest.TestCase):
         queued = self.client.queue(event)
         self.assertTrue(queued.exists())
 
+    def test_inspect_lore_extracts_project_repo_namespace(self):
+        repo = Path(self.temp.name) / 'lore-namespaced'
+        (repo / '.lore').mkdir(parents=True)
+        (repo / '.lore' / 'config.toml').write_text(
+            'remote_url = "lores://token:secret@lore.roguefairy.net/ghostlore/client"\n',
+            encoding='utf-8',
+        )
+        (repo / '.lore' / 'view').write_text('main@5\n', encoding='utf-8')
+        with patch.object(bridge, '_run_cmd', return_value=(1, '', '')):
+            info = bridge.inspect_vcs(repo, slug='ghostlore-client')
+        self.assertEqual(info['remoteUri'], 'lores://lore.roguefairy.net/ghostlore/client')
+        self.assertEqual(info['loreProject'], 'ghostlore')
+        self.assertEqual(info['loreRepo'], 'client')
+
     def test_inspect_uefn_urc_workspace_and_stage_cli(self):
         repo = Path(self.temp.name) / 'TicketToDeath'
         (repo / '.urc').mkdir(parents=True)
@@ -163,6 +177,157 @@ class BridgeTests(unittest.TestCase):
         }
         queued = self.client.queue(stage_event)
         self.assertTrue(queued.exists())
+
+    def test_rest_v1_cross_tool_queries_and_artifact_flush_against_go_server(self):
+        import os
+        import subprocess
+        server_dir = Path(__file__).parents[2] / 'studio-server'
+        ext = '.exe' if os.name == 'nt' else ''
+        bin_path = server_dir / 'bin' / f'studio-server{ext}'
+        if not bin_path.is_file():
+            subprocess.run(['go', 'build', '-o', str(bin_path), './cmd/studio-server'], cwd=str(server_dir), check=True)
+
+        svc_key = 'stk_python_test_admin_key_9999'
+        env = dict(os.environ)
+        env['STUDIO_DATABASE_URL'] = ''
+        env['DATABASE_URL'] = ''
+        env['STUDIO_ADDR'] = '127.0.0.1:0'
+        env['STUDIO_PRINT_LISTENER'] = '1'
+        env['STUDIO_SERVICE_KEYS'] = f'pyci:admin:{svc_key}'
+
+        proc = subprocess.Popen(
+            [str(bin_path)],
+            cwd=str(server_dir),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            ready_line = proc.stdout.readline().strip()
+            self.assertTrue(ready_line.startswith('STUDIO_READY addr='))
+            api_url = 'http://' + ready_line.split('addr=', 1)[1]
+
+            with patch.dict(os.environ, {'STUDIO_KEY': svc_key, 'STUDIO_API_URL': api_url}):
+                rest_client = bridge.Client(url='', project='', outbox=self.temp.name, api_url=api_url)
+                me = rest_client.whoami(client_app='geppetto')
+                self.assertEqual(me['clientApp'], 'geppetto')
+                self.assertTrue(me['isAdmin'])
+
+                created = rest_client.rest('POST', '/v1/projects', {'name': 'Fae Chronicles', 'kind': 'digital'})
+                pid = created['id']
+                rest_client.project_id = pid
+
+                rev = created['revision']
+                res1 = rest_client.rest('POST', f'/v1/projects/{pid}/commands', {
+                    'revision': rev,
+                    'command': 'repository',
+                    'input': {'name': 'Fae Lore Art', 'system': 'lore', 'loreRepo': 'art-2d'},
+                })
+                res2 = rest_client.rest('POST', f'/v1/projects/{pid}/commands', {
+                    'revision': res1['revision'],
+                    'command': 'artifact',
+                    'input': {'name': 'Fae Queen', 'kind': 'Character', 'track': 'art_2d', 'tool': 'geppetto'},
+                })
+                art_id = res2['project']['artifacts'][0]['id']
+
+                # Query Aetherion projects & Geppetto Lore workspaces via REST /v1
+                aeth = rest_client.my_projects(client_app='aetherion')
+                self.assertEqual(aeth['clientApp'], 'aetherion')
+                self.assertEqual(len(aeth['projects']), 1)
+                self.assertEqual(aeth['projects'][0]['name'], 'Fae Chronicles')
+
+                gepp = rest_client.my_workspaces(client_app='geppetto', vcs='lore', only_writable=True)
+                self.assertEqual(len(gepp['workspaces']), 1)
+                self.assertEqual(
+                    gepp['workspaces'][0]['repositories'][0]['remoteUri'],
+                    'lores://lore.roguefairy.net/fae-chronicles/art-2d',
+                )
+                self.assertEqual(gepp['workspaces'][0]['artifacts'][0]['id'], art_id)
+
+                # Upload & publish local .kra file via durable outbox -> REST /v1/projects/{id}/files + /events
+                kra_file = Path(self.temp.name) / 'fae_queen.kra'
+                kra_file.write_bytes(b'KRITA_ZIP_ARCHIVE_CONTENT')
+                rc = bridge.main([
+                    '--outbox', self.temp.name,
+                    '--api-url', api_url,
+                    '--project-id', pid,
+                    'artifact', str(kra_file),
+                    '--artifact-id', art_id,
+                    '--source', 'geppetto',
+                ])
+                self.assertEqual(rc, 0)
+                updated_proj = rest_client.project()
+                self.assertEqual(len(updated_proj['state']['artifactVersions']), 1)
+
+                # Create "Klaus Syndicate" (Aetherion engine) and verify generalist + project configs (JSON & YAML)
+                klaus = rest_client.rest('POST', '/v1/projects', {
+                    'name': 'Klaus Syndicate',
+                    'kind': 'digital',
+                    'engine': 'aetherion',
+                })
+                klaus_id = klaus['id']
+                k_rev = klaus['revision']
+                k_res1 = rest_client.rest('POST', f'/v1/projects/{klaus_id}/commands', {
+                    'revision': k_rev,
+                    'command': 'repository',
+                    'input': {
+                        'name': 'Klaus Engine',
+                        'slug': 'klaus-engine',
+                        'system': 'git',
+                        'remoteUri': 'git@github.com:RogueFairyStudios/klaus-syndicate.git',
+                        'workspacePath': 'games/klaus-syndicate/project.godot',
+                    },
+                })
+                rest_client.rest('POST', f'/v1/projects/{klaus_id}/commands', {
+                    'revision': k_res1['revision'],
+                    'command': 'repository',
+                    'input': {
+                        'name': 'Klaus Art & Animation',
+                        'slug': 'klaus-art',
+                        'system': 'lore',
+                        'loreRepo': 'art',
+                    },
+                })
+
+                studio_aeth_json = Path(self.temp.name) / 'roguefairy-aetherion.json'
+                rc_cfg1 = bridge.main([
+                    '--api-url', api_url,
+                    'config', 'aetherion',
+                    '--scope', 'studio',
+                    '-o', str(studio_aeth_json),
+                ])
+                self.assertEqual(rc_cfg1, 0)
+                parsed_studio_aeth = json.loads(studio_aeth_json.read_text(encoding='utf-8'))
+                self.assertEqual(parsed_studio_aeth['scope'], 'studio')
+                self.assertEqual(parsed_studio_aeth['tool'], 'aetherion')
+                self.assertIn('auth.telluriancorp.info', parsed_studio_aeth['authentik']['baseUrl'])
+
+                klaus_gepp_yaml = Path(self.temp.name) / 'klaus-syndicate-geppetto.yaml'
+                rc_cfg2 = bridge.main([
+                    '--api-url', api_url,
+                    'config', 'geppetto',
+                    '--project', 'klaus-syndicate',
+                    '--format', 'yaml',
+                    '-o', str(klaus_gepp_yaml),
+                ])
+                self.assertEqual(rc_cfg2, 0)
+                yaml_text = klaus_gepp_yaml.read_text(encoding='utf-8')
+                self.assertIn('schemaVersion: "rfs.studio.config/v1"', yaml_text)
+                self.assertIn('name: "Klaus Syndicate"', yaml_text)
+                self.assertIn('lores://lore.roguefairy.net/klaus-syndicate/art', yaml_text)
+
+                klaus_dev_cfg = json.loads(rest_client.fetch_config('aetherion', project='klaus-syndicate', fmt='json'))
+                self.assertEqual(klaus_dev_cfg['project']['engine'], 'aetherion')
+                self.assertTrue(klaus_dev_cfg['project']['usesAetherion'])
+                self.assertEqual(klaus_dev_cfg['workspace']['primaryWorkspacePath'], 'games/klaus-syndicate/project.godot')
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+            if proc.stdout:
+                proc.stdout.close()
+            if proc.stderr:
+                proc.stderr.close()
 
 
 if __name__ == '__main__':

@@ -174,6 +174,61 @@ describe('studio production lifecycle', () => {
       modifiedFiles: ['../../etc/passwd']
     })).toThrow('Invalid asset path')
   })
+  test('configures per-project Lore <project>/<repo> namespaces and validates restricted visibility', () => {
+    command('loreConfig', {
+      projectSlug: 'ghostlore',
+      visibility: 'internal',
+      employeeRole: 'editor',
+      remoteBase: 'lores://lore.roguefairy.net',
+      bridgeUrl: 'https://lore-auth.roguefairy.net',
+      authUrl: 'https://auth.telluriancorp.info'
+    })
+    expect(state.lore.projectSlug).toBe('ghostlore')
+    expect(state.lore.employeeRole).toBe('editor')
+    expect(() => command('loreConfig', { bridgeUrl: 'http://insecure.roguefairy.net' })).toThrow('HTTPS')
+
+    command('repository', {
+      name: 'GhostLore Client',
+      system: 'lore',
+      loreRepo: 'client',
+      workspacePath: 'games/ghostlore'
+    })
+    const clientRepo = state.repositories.find(r => r.loreRepo === 'client')
+    expect(clientRepo.slug).toBe('ghostlore-client')
+    expect(clientRepo.loreFullName).toBe('ghostlore/client')
+    expect(clientRepo.remoteUri).toBe('lores://lore.roguefairy.net/ghostlore/client')
+
+    expect(() => command('repository', {
+      name: 'Missing Namespace',
+      slug: 'bad-lore',
+      system: 'lore',
+      remoteUri: 'lores://lore.roguefairy.net/unscoped'
+    })).toThrow('<project>/<repo>')
+    expect(() => command('repository', {
+      name: 'Traversal',
+      slug: 'bad-seg',
+      system: 'lore',
+      loreRepo: '../escape'
+    })).toThrow('Invalid Lore repository name')
+
+    command('vcsStatus', {
+      slug: 'ghostlore-cinematics',
+      system: 'lore',
+      remoteUri: 'lores://lore.roguefairy.net/ghostlore/cinematics',
+      branch: 'main',
+      revisionNumber: 7
+    })
+    const cinematics = state.repositories.find(r => r.slug === 'ghostlore-cinematics')
+    expect(cinematics.loreFullName).toBe('ghostlore/cinematics')
+
+    expect(() => command('loreConfig', { visibility: 'restricted', employeeRole: 'reader' })).toThrow('Restricted')
+    command('loreConfig', { visibility: 'restricted' })
+    expect(state.lore.visibility).toBe('restricted')
+    expect(state.lore.employeeRole).toBe('none')
+    expect(() => command('loreConfig', { visibility: 'internal' })).toThrow('Confirm')
+    command('loreConfig', { visibility: 'internal', confirmUnrestrict: true })
+    expect(state.lore.visibility).toBe('internal')
+  })
   test('populates storefront presets and gates release publication on compliance and store assets', () => {
     const majorStores = ['steam', 'epic', 'apple_app_store', 'google_play', 'playstation', 'xbox', 'nintendo', 'igdb', 'bgg_tabletop']
     for (const sf of majorStores) {

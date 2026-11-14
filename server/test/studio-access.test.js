@@ -125,4 +125,82 @@ describe('studio API authorization and revisions', () => {
     expect(editorView.access).toEqual([])
     expect(editorView.integrationAccess).toEqual([])
   })
+  test('enforces Tellurian Authentik group bindings, fail-closed partner isolation, and blueprint export', async () => {
+    const authGroups = {
+      20: { id: 20, name: 'Rogue Fairy Studios - C-Level' },
+      21: { id: 21, name: 'Rogue Fairy Studios' },
+      22: { id: 22, name: 'Rogue Fairy Studios - Partners' },
+      23: { id: 23, name: 'Rogue Fairy Studios - GhostLore - Leads' },
+      24: { id: 24, name: 'Rogue Fairy Studios - GhostLore - Partners' }
+    }
+    global.WIKI.auth.groups = authGroups
+    global.WIKI.models.groups = {
+      query: () => ({
+        findById: async id => authGroups[id] || { id, name: `Group ${id}` }
+      })
+    }
+    const memberCtx = (id, groups) => ({ req: { user: { id, groups, permissions: [] } } })
+
+    // Editors cannot configure Lore namespace or Authentik group bindings
+    await expect(resolver.Mutation.studioCommand(null, command(1, 'loreConfig', { projectSlug: 'ghostlore' }), context(10))).rejects.toThrow('Manager')
+    await expect(resolver.Mutation.studioCommand(null, command(1, 'groupAccess', { groupId: 23, role: 'manager' }), context(10))).rejects.toThrow('Manager')
+
+    // Manager configures internal Lore namespace with editor baseline for studio employees
+    await resolver.Mutation.studioCommand(null, command(1, 'loreConfig', {
+      projectSlug: 'ghostlore',
+      visibility: 'internal',
+      employeeRole: 'editor'
+    }), context(8))
+    await resolver.Mutation.studioCommand(null, command(2, 'groupAccess', {
+      groupId: 23,
+      role: 'manager',
+      loreActions: ['read', 'write', 'admin', 'presign'],
+      loreCanCreateRepo: true
+    }), context(8))
+    await resolver.Mutation.studioCommand(null, command(3, 'groupAccess', {
+      groupId: 24,
+      role: 'reader',
+      loreActions: ['read'],
+      loreCanCreateRepo: false
+    }), context(8))
+
+    // Studio employee (Rogue Fairy Studios) inherits baseline editor access on internal project
+    const employeeProj = await resolver.Query.studioProject(null, { id: 'project' }, memberCtx(30, [21]))
+    expect(employeeProj.canEdit).toBe(true)
+    expect(employeeProj.canManage).toBe(false)
+    expect(JSON.parse(employeeProj.state).groupAccess).toEqual([])
+    expect(JSON.parse(employeeProj.state).loreBlueprint).toBeUndefined()
+
+    // Fail-closed partner check: partner WITHOUT project group cannot access even if also in Rogue Fairy Studios
+    await expect(resolver.Query.studioProject(null, { id: 'project' }, memberCtx(31, [22]))).rejects.toThrow('Project unavailable')
+    await expect(resolver.Query.studioProject(null, { id: 'project' }, memberCtx(32, [21, 22]))).rejects.toThrow('Project unavailable')
+
+    // Partner explicitly in GhostLore - Partners gets read-only access
+    const partnerProj = await resolver.Query.studioProject(null, { id: 'project' }, memberCtx(33, [22, 24]))
+    expect(partnerProj.canManage).toBe(false)
+    expect(partnerProj.canEdit).toBe(false)
+
+    // Project lead in GhostLore - Leads gets manager view with Authentik attributes and Blueprint YAML
+    const leadProj = await resolver.Query.studioProject(null, { id: 'project' }, memberCtx(34, [21, 23]))
+    expect(leadProj.canManage).toBe(true)
+    const leadState = JSON.parse(leadProj.state)
+    expect(leadState.groupAccess[0].authentikAttributes).toEqual({
+      lore_project: 'ghostlore',
+      lore_visibility: 'internal',
+      lore_actions: ['read', 'write', 'admin', 'presign'],
+      lore_can_create_repo: true
+    })
+    expect(leadState.loreBlueprint).toContain('name: "Rogue Fairy Studios - Lore Projects"')
+    expect(leadState.loreBlueprint).toContain('name: "Rogue Fairy Studios - GhostLore - Leads"')
+    expect(leadState.loreBlueprint).toContain('lore_project: ghostlore')
+
+    // Switching visibility to restricted blocks baseline employees while C-Level retains full management
+    await resolver.Mutation.studioCommand(null, command(4, 'loreConfig', {
+      projectSlug: 'ghostlore',
+      visibility: 'restricted'
+    }), memberCtx(34, [21, 23]))
+    await expect(resolver.Query.studioProject(null, { id: 'project' }, memberCtx(30, [21]))).rejects.toThrow('Project unavailable')
+    const cLevelProj = await resolver.Query.studioProject(null, { id: 'project' }, memberCtx(35, [20]))
+    expect(cLevelProj.canManage).toBe(true)
+  })
 })

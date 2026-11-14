@@ -37,7 +37,7 @@
               @click="select(item.id)"
             >
               <span>{{ item.data.name }}</span>
-              <small class="project-meta">{{ t(item.data.kind) }}{{ item.data.archived ? ' · ' + t('archived') : '' }}</small>
+              <small class="project-meta">{{ t(item.data.kind) }}{{ item.data.engine ? ' · ' + t(item.data.engine) : '' }}{{ item.data.archived ? ' · ' + t('archived') : '' }}</small>
             </button>
             <p
               v-if="!projects.length && !busy"
@@ -55,7 +55,15 @@
                 required
                 maxlength="500"
               ></label>
-              <label>{{ t('type') }}<select v-model="newProject.kind"><option value="digital">{{ t('digital') }}</option><option value="analogue">{{ t('analogue') }}</option><option value="hybrid">{{ t('hybrid') }}</option></select></label>
+              <label>{{ t('type') }}<select
+                v-model="newProject.kind"
+                @change="onNewProjectKindChange"
+              ><option value="digital">{{ t('digital') }}</option><option value="analogue">{{ t('analogue') }}</option><option value="hybrid">{{ t('hybrid') }}</option></select></label>
+              <label>{{ t('engine') }}<select v-model="newProject.engine"><option
+                v-for="eng in engines"
+                :key="eng"
+                :value="eng"
+              >{{ t(eng) }}</option></select></label>
               <button :disabled="busy">
                 {{ t('create') }}
               </button>
@@ -70,6 +78,7 @@
               <h2>
                 {{ project.data.name }}
                 <small class="studio-badge">{{ t(project.data.kind) }}</small>
+                <small class="studio-badge">{{ t(project.data.engine || (project.data.kind === 'analogue' ? 'tabletop' : 'aetherion')) }}</small>
                 <small class="studio-badge">{{ t(project.data.phase || 'pre_production') }}</small>
                 <small
                   v-if="project.data.archived"
@@ -93,7 +102,7 @@
               />
               <button
                 :disabled="busy"
-                @click="command('project', { name: project.data.name, kind: project.data.kind, phase: project.data.phase || 'pre_production', archived: !project.data.archived })"
+                @click="command('project', { name: project.data.name, kind: project.data.kind, engine: project.data.engine || 'aetherion', phase: project.data.phase || 'pre_production', archived: !project.data.archived })"
               >
                 {{ t(project.data.archived ? 'restore' : 'archive') }}
               </button>
@@ -441,6 +450,111 @@
               </form>
               <form
                 v-if="project.canManage"
+                @submit.prevent="saveGroupAccess"
+              >
+                <h3>{{ t('authentikGroupsTitle') }}</h3>
+                <p class="studio-muted">
+                  {{ t('authentikGroupsHint') }}
+                </p>
+                <search-picker
+                  v-model="groupAccessForm.groupId"
+                  :project-id="selected"
+                  kind="groups"
+                  :label="t('authentikGroup')"
+                  :t="t"
+                  required
+                />
+                <label>{{ t('accessRole') }}<select
+                  v-model="groupAccessForm.role"
+                  @change="onGroupRoleChange"
+                ><option
+                  v-for="role in accessRoles"
+                  :key="role"
+                  :value="role"
+                >{{ t(role) }}</option></select></label>
+                <fieldset v-if="groupAccessForm.role !== 'remove'">
+                  <legend>{{ t('loreActionsLabel') }}</legend>
+                  <div class="studio-form-grid">
+                    <label
+                      v-for="action in loreActions"
+                      :key="action"
+                      class="studio-check"
+                    >
+                      <input
+                        v-model="groupAccessForm.loreActions"
+                        type="checkbox"
+                        :value="action"
+                      >
+                      <span>{{ t('loreAction_' + action) }}</span>
+                    </label>
+                  </div>
+                  <label class="studio-check">
+                    <input
+                      v-model="groupAccessForm.loreCanCreateRepo"
+                      type="checkbox"
+                    >
+                    <span>{{ t('loreCanCreateRepo') }}</span>
+                  </label>
+                </fieldset>
+                <button :disabled="busy">
+                  {{ t('save') }}
+                </button>
+              </form>
+              <article
+                v-for="entry in (project.canManage ? project.data.groupAccess : [])"
+                :key="'ga-' + entry.groupId"
+                class="studio-card"
+              >
+                <div class="studio-asset-header">
+                  <h4>{{ entry.name || entry.groupName || (t('group') + ' #' + entry.groupId) }}</h4>
+                  <span class="studio-badge">{{ t(entry.role) }}</span>
+                  <span
+                    v-if="entry.loreCanCreateRepo"
+                    class="studio-badge studio-clean-badge checksum"
+                  >lore_can_create_repo</span>
+                  <span
+                    v-for="act in (entry.loreActions || [])"
+                    :key="act"
+                    class="studio-badge checksum"
+                  >{{ act }}</span>
+                </div>
+                <div class="studio-inline-actions">
+                  <button
+                    type="button"
+                    :disabled="busy"
+                    @click="editGroupAccess(entry)"
+                  >
+                    {{ t('edit') }}
+                  </button>
+                  <button
+                    type="button"
+                    @click="copySnippet(formatGroupAttributes(entry), 'attr-' + entry.groupId)"
+                  >
+                    {{ copiedSnippet === 'attr-' + entry.groupId ? t('copied') : t('copyJson') }}
+                  </button>
+                </div>
+                <details class="studio-settings">
+                  <summary>{{ t('authentikAttrsJson') }}</summary>
+                  <pre class="studio-code">{{ formatGroupAttributes(entry) }}</pre>
+                </details>
+              </article>
+              <details
+                v-if="project.canManage && project.data.loreBlueprint"
+                class="studio-settings"
+              >
+                <summary>{{ t('authentikBlueprintYaml') }}</summary>
+                <div class="studio-inline-actions">
+                  <button
+                    type="button"
+                    @click="copySnippet(project.data.loreBlueprint, 'blueprint')"
+                  >
+                    {{ copiedSnippet === 'blueprint' ? t('copied') : t('copyBlueprint') }}
+                  </button>
+                </div>
+                <pre class="studio-code">{{ project.data.loreBlueprint }}</pre>
+              </details>
+              <form
+                v-if="project.canManage"
                 @submit.prevent="command('integrationAccess', integration)"
               >
                 <h3>{{ t('integrations') }}</h3>
@@ -719,8 +833,8 @@ const studioTemplatesQuery = gql`
   }
 `
 const studioCreateProjectMutation = gql`
-  mutation ($name: String!, $kind: String!) {
-    studioCreateProject(name: $name, kind: $kind) {
+  mutation ($name: String!, $kind: String!, $engine: String) {
+    studioCreateProject(name: $name, kind: $kind, engine: $engine) {
       id
       revision
       state
@@ -757,11 +871,15 @@ export default {
       assigneeFilter: '',
       sections: ['overview', 'pipeline', 'team', 'documents', 'work', 'planning', 'production', 'validation', 'distribution', 'releases', 'credits', 'history'],
       statuses: ['backlog', 'ready', 'active', 'review', 'done'],
+      engines: ['aetherion', 'godot', 'carnifex', 'uefn', 'unity', 'custom', 'tabletop'],
       accessRoles: ['reader', 'editor', 'manager', 'remove'],
-      newProject: { name: '', kind: 'digital' },
+      loreActions: ['read', 'write', 'owner', 'admin', 'migrate', 'push-protected', 'obliterate', 'presign'],
+      copiedSnippet: '',
+      newProject: { name: '', kind: 'digital', engine: 'aetherion' },
       person: { name: '', teamId: '', userId: null, roleText: '', order: 0 },
       task: { title: '', type: 'task', priority: 'normal', criteria: '', discipline: '', phase: '', stage: '', toolUri: '', assigneeId: '', dependencies: [], documentIds: [], dueDate: '', blockedReason: '', milestoneId: '', cycleId: '' },
       access: { userId: null, role: 'reader' },
+      groupAccessForm: { groupId: null, role: 'editor', loreActions: ['read', 'write'], loreCanCreateRepo: false },
       document: { pageId: null },
       integration: { groupId: null, role: 'reader' },
       templates: [],
@@ -777,6 +895,7 @@ export default {
       return [
         { key: 'name', required: true },
         { key: 'kind', required: true, options: ['digital', 'analogue', 'hybrid'].map(id => ({ id, name: this.t(id) })) },
+        { key: 'engine', required: true, options: this.engines.map(id => ({ id, name: this.t(id) })) },
         { key: 'phase', required: true, options: ['pre_production', 'production', 'post_production', 'live'].map(id => ({ id, name: this.t(id) })) }
       ]
     },
@@ -928,9 +1047,11 @@ export default {
       }
     },
     decode (row) {
+      const parsed = JSON.parse(row.state)
       return {
         ...row,
         data: {
+          engine: parsed.kind === 'analogue' ? 'tabletop' : 'aetherion',
           phase: 'pre_production',
           teams: [],
           milestones: [],
@@ -941,9 +1062,10 @@ export default {
           validations: [],
           repositories: [],
           platformTargets: [],
+          groupAccess: [],
           integrationAccess: [],
           integrationEvents: [],
-          ...JSON.parse(row.state)
+          ...parsed
         }
       }
     },
@@ -971,9 +1093,17 @@ export default {
       this.taskFilter = ''
       this.assigneeFilter = ''
       this.access = { userId: null, role: 'reader' }
+      this.groupAccessForm = { groupId: null, role: 'editor', loreActions: ['read', 'write'], loreCanCreateRepo: false }
       this.document = { pageId: null }
       this.integration = { groupId: null, role: 'reader' }
       this.syncUrl()
+    },
+    onNewProjectKindChange () {
+      if (this.newProject.kind === 'analogue' && this.newProject.engine === 'aetherion') {
+        this.newProject.engine = 'tabletop'
+      } else if (this.newProject.kind !== 'analogue' && this.newProject.engine === 'tabletop') {
+        this.newProject.engine = 'aetherion'
+      }
     },
     async createProject () {
       await this.run(async () => {
@@ -1013,12 +1143,66 @@ export default {
       return this.command('project', {
         name: input.name,
         kind: input.kind,
+        engine: input.engine || this.project.data.engine || 'aetherion',
         phase: input.phase || this.project.data.phase || 'pre_production',
         archived: !!input.archived
       })
     },
     async saveTeam () {
       if (await this.command('team', this.team)) this.team = { name: '' }
+    },
+    onGroupRoleChange () {
+      if (this.groupAccessForm.role === 'manager') {
+        this.groupAccessForm.loreActions = ['read', 'write', 'admin', 'presign']
+        this.groupAccessForm.loreCanCreateRepo = true
+      } else if (this.groupAccessForm.role === 'editor') {
+        this.groupAccessForm.loreActions = ['read', 'write']
+        this.groupAccessForm.loreCanCreateRepo = false
+      } else if (this.groupAccessForm.role === 'reader') {
+        this.groupAccessForm.loreActions = ['read']
+        this.groupAccessForm.loreCanCreateRepo = false
+      }
+    },
+    editGroupAccess (entry) {
+      this.groupAccessForm = {
+        groupId: entry.groupId,
+        role: entry.role,
+        loreActions: Array.isArray(entry.loreActions) ? entry.loreActions.slice() : ['read'],
+        loreCanCreateRepo: !!entry.loreCanCreateRepo
+      }
+    },
+    async saveGroupAccess () {
+      const payload = {
+        groupId: this.groupAccessForm.groupId,
+        role: this.groupAccessForm.role,
+        loreActions: this.groupAccessForm.loreActions,
+        loreCanCreateRepo: !!this.groupAccessForm.loreCanCreateRepo
+      }
+      if (await this.command('groupAccess', payload)) {
+        this.groupAccessForm = { groupId: null, role: 'editor', loreActions: ['read', 'write'], loreCanCreateRepo: false }
+      }
+    },
+    formatGroupAttributes (entry) {
+      const attrs = entry.authentikAttributes || {
+        lore_project: (this.project.data.lore && this.project.data.lore.projectSlug) || 'project',
+        lore_visibility: (this.project.data.lore && this.project.data.lore.visibility) || 'internal',
+        lore_actions: entry.loreActions || [],
+        lore_can_create_repo: !!entry.loreCanCreateRepo
+      }
+      return JSON.stringify(attrs, null, 2)
+    },
+    async copySnippet (value, key) {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(value)
+          this.copiedSnippet = key
+          setTimeout(() => {
+            if (this.copiedSnippet === key) this.copiedSnippet = ''
+          }, 1800)
+        }
+      } catch (err) {
+        this.copiedSnippet = ''
+      }
     },
     tasksFor (status) {
       return this.project.data.tasks.filter(item =>
@@ -1473,6 +1657,22 @@ export default {
 }
 .studio-inline-actions button {
   margin-right: 0;
+}
+.studio-code {
+  margin: 8px 0 0 0;
+  padding: 12px;
+  border-radius: 5px;
+  border: 1px solid #d4d4d8;
+  background: #f4f4f5;
+  overflow-x: auto;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.theme--dark .studio-code {
+  border-color: #2e2e34;
+  background: #111114;
+  color: #e4e4e7;
 }
 @media (max-width: 860px) {
   .studio-layout {
